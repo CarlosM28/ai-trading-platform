@@ -1,0 +1,113 @@
+/**
+ * Calcula la Media Móvil Simple (SMA) para un conjunto de precios.
+ */
+export function calculateSMA(prices: number[], period: number): number {
+  if (prices.length < period) return prices[prices.length - 1] || 0;
+  const slice = prices.slice(-period);
+  const sum = slice.reduce((acc, val) => acc + val, 0);
+  return sum / period;
+}
+
+/**
+ * Calcula la Media Móvil Exponencial (EMA) para un conjunto de precios.
+ */
+export function calculateEMA(prices: number[], period: number): number {
+  if (prices.length === 0) return 0;
+  if (prices.length < period) return calculateSMA(prices, prices.length);
+
+  const k = 2 / (period + 1);
+  let ema = calculateSMA(prices.slice(0, period), period);
+
+  for (let i = period; i < prices.length; i++) {
+    ema = prices[i] * k + ema * (1 - k);
+  }
+
+  return ema;
+}
+
+/**
+ * Calcula el Índice de Fuerza Relativa (RSI) de 14 períodos.
+ */
+export function calculateRSI(prices: number[], period: number = 14): number {
+  if (prices.length <= period) return 50; // Valor neutro por defecto si no hay suficiente historial
+
+  let gains = 0;
+  let losses = 0;
+
+  // Primer cálculo: ganancias y pérdidas medias de los primeros 'period' cambios
+  for (let i = 1; i <= period; i++) {
+    const diff = prices[i] - prices[i - 1];
+    if (diff > 0) {
+      gains += diff;
+    } else {
+      losses -= diff;
+    }
+  }
+
+  let avgGain = gains / period;
+  let avgLoss = losses / period;
+
+  // Suavizado Wilder para el resto del historial
+  for (let i = period + 1; i < prices.length; i++) {
+    const diff = prices[i] - prices[i - 1];
+    let currentGain = 0;
+    let currentLoss = 0;
+
+    if (diff > 0) {
+      currentGain = diff;
+    } else {
+      currentLoss = -diff;
+    }
+
+    avgGain = (avgGain * (period - 1) + currentGain) / period;
+    avgLoss = (avgLoss * (period - 1) + currentLoss) / period;
+  }
+
+  if (avgLoss === 0) return avgGain === 0 ? 50 : 100;
+  const rs = avgGain / avgLoss;
+  return 100 - 100 / (1 + rs);
+}
+
+export interface MACDResult {
+  macd: number;
+  signal: number;
+  histogram: number;
+}
+
+/**
+ * Calcula el MACD (12, 26, 9).
+ */
+export function calculateMACD(
+  prices: number[],
+  fastPeriod: number = 12,
+  slowPeriod: number = 26,
+  signalPeriod: number = 9
+): MACDResult {
+  const result: MACDResult = { macd: 0, signal: 0, histogram: 0 };
+  
+  if (prices.length < slowPeriod) {
+    return result; // No hay suficientes datos para el MACD lento
+  }
+
+  // 1. Calcular EMA rápida (12) y lenta (26) para todo el historial
+  const macdValues: number[] = [];
+  
+  for (let i = slowPeriod - 1; i < prices.length; i++) {
+    const slice = prices.slice(0, i + 1);
+    const emaFast = calculateEMA(slice, fastPeriod);
+    const emaSlow = calculateEMA(slice, slowPeriod);
+    macdValues.push(emaFast - emaSlow);
+  }
+
+  // 2. Calcular la Línea de Señal (EMA de 9 períodos sobre la línea MACD)
+  if (macdValues.length === 0) return result;
+
+  const currentMacd = macdValues[macdValues.length - 1];
+  const currentSignal = calculateEMA(macdValues, signalPeriod);
+
+  return {
+    macd: currentMacd,
+    signal: currentSignal,
+    histogram: currentMacd - currentSignal,
+  };
+}
