@@ -26,7 +26,8 @@ export const Dashboard: React.FC = () => {
     isLoading,
     isApiLive,
     timeframe,
-    changeTimeframe
+    changeTimeframe,
+    transactions
   } = useTrading();
 
   const [tradeAmount, setTradeAmount] = useState<number>(1000);
@@ -37,7 +38,7 @@ export const Dashboard: React.FC = () => {
   }, [assets, activeAssetId]);
 
   // Calcular valor total de portafolio y PnL
-  const { totalValue, netPnl, pnlPercent } = useMemo(() => {
+  const { totalValue, netPnl, pnlPercent, realizedPnl, unrealizedPnl } = useMemo(() => {
     const valueOfHoldings = assets.reduce((sum, asset) => {
       const qty = holdings[asset.symbol] || 0;
       return sum + qty * asset.price;
@@ -48,13 +49,57 @@ export const Dashboard: React.FC = () => {
     const net = total - startingCapital;
     const pct = (net / startingCapital) * 100;
 
+    // Calcular PnL Realizado y No Realizado
+    const positionCost: Record<string, { qty: number; totalCost: number }> = {};
+    let totalRealizedPnl = 0;
+
+    // Las transacciones se procesan cronológicamente (al revés del orden del array)
+    const chronologicalTx = [...transactions].reverse();
+
+    chronologicalTx.forEach(tx => {
+      const sym = tx.assetSymbol;
+      if (!positionCost[sym]) {
+        positionCost[sym] = { qty: 0, totalCost: 0 };
+      }
+
+      const pos = positionCost[sym];
+
+      if (tx.type === 'BUY') {
+        pos.qty += tx.amount;
+        pos.totalCost += tx.totalUsd;
+      } else {
+        // SELL
+        if (pos.qty > 0) {
+          const avgPrice = pos.totalCost / pos.qty;
+          const soldCost = tx.amount * avgPrice;
+          const pnl = tx.totalUsd - soldCost;
+          totalRealizedPnl += pnl;
+
+          pos.qty = Math.max(0, pos.qty - tx.amount);
+          pos.totalCost = Math.max(0, pos.totalCost - soldCost);
+        }
+      }
+    });
+
+    let totalUnrealizedPnl = 0;
+    assets.forEach(asset => {
+      const pos = positionCost[asset.symbol];
+      if (pos && pos.qty > 0) {
+        const currentValue = pos.qty * asset.price;
+        const unrealized = currentValue - pos.totalCost;
+        totalUnrealizedPnl += unrealized;
+      }
+    });
+
     return {
       totalValue: total,
       holdingsValue: valueOfHoldings,
       netPnl: net,
-      pnlPercent: pct
+      pnlPercent: pct,
+      realizedPnl: Number(totalRealizedPnl.toFixed(2)),
+      unrealizedPnl: Number(totalUnrealizedPnl.toFixed(2))
     };
-  }, [assets, balance, holdings]);
+  }, [assets, balance, holdings, transactions]);
 
   // Contar bots activos
   const activeBotsCount = useMemo(() => {
@@ -281,6 +326,18 @@ export const Dashboard: React.FC = () => {
                 ({netPnl >= 0 ? '+' : ''}{pnlPercent.toFixed(2)}%)
               </span>
             </h3>
+            <div style={{ display: 'flex', gap: '16px', marginTop: '6px', fontSize: '0.8rem', fontWeight: 600 }}>
+              <span style={{ color: 'var(--text-muted)' }}>
+                Realizado: <span style={{ color: realizedPnl >= 0 ? 'var(--color-buy)' : 'var(--color-sell)' }}>
+                  {realizedPnl >= 0 ? '+' : ''}{realizedPnl.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
+                </span>
+              </span>
+              <span style={{ color: 'var(--text-muted)' }}>
+                Flotante: <span style={{ color: unrealizedPnl >= 0 ? 'var(--color-buy)' : 'var(--color-sell)' }}>
+                  {unrealizedPnl >= 0 ? '+' : ''}{unrealizedPnl.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
+                </span>
+              </span>
+            </div>
           </div>
         </div>
 
