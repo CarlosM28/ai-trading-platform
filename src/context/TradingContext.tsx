@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
-import { type Asset, type NewsEvent, generateInitialAssets, tickAssets, generateRandomNews, isStockMarketClosed } from '../utils/marketSimulator';
-import { calculateRSI, calculateMACD, calculateSMA } from '../utils/indicators';
+import { type Asset, type NewsEvent, generateInitialAssets, tickAssets, generateRandomNews, isStockMarketClosed, INITIAL_ASSETS_DATA } from '../utils/marketSimulator';
+import { calculateRSI, calculateMACD, calculateSMA, calculateSupportResistance } from '../utils/indicators';
 import { externalAssetsPool } from '../utils/externalAssets';
 
 export interface BotConfig {
@@ -124,6 +124,184 @@ const getCurrentPeriodValue = (tf: '1m' | '1h' | '4h' | '1D') => {
   if (tf === '1h') return now.getHours();
   if (tf === '4h') return Math.floor(now.getHours() / 4);
   return now.getDate(); // 1D
+};
+
+const STOCK_EXCHANGES: Record<string, string> = {
+  AAPL: 'NASDAQ',
+  TSLA: 'NASDAQ',
+  NVDA: 'NASDAQ',
+  TTWO: 'NASDAQ',
+  ENR1: 'XETR',
+  AMD: 'NASDAQ',
+  ASML: 'NASDAQ',
+  SMCI: 'NASDAQ',
+  VRT: 'NYSE',
+  INTC: 'NASDAQ',
+  QCOM: 'NASDAQ',
+  GE: 'NYSE',
+  NEE: 'NYSE',
+  FSLR: 'NASDAQ',
+  U: 'NYSE',
+  SONY: 'NYSE',
+  EA: 'NASDAQ',
+  NTDOY: 'OTC',
+  CEG: 'NASDAQ'
+};
+
+const fetchWithTimeout = async (url: string, optionsOrMs: RequestInit | number = {}, ms = 2500) => {
+  let finalOptions: RequestInit = {};
+  let finalMs = ms;
+  if (typeof optionsOrMs === 'number') {
+    finalMs = optionsOrMs;
+  } else {
+    finalOptions = optionsOrMs;
+  }
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), finalMs);
+  try {
+    const response = await fetch(url, { ...finalOptions, signal: controller.signal });
+    clearTimeout(timeoutId);
+    return response;
+  } catch (e) {
+    clearTimeout(timeoutId);
+    throw e;
+  }
+};
+
+const fetchTradingViewPrices = async (
+  symbols: string[],
+  timeframe: '1m' | '1h' | '4h' | '1D' = '1m'
+): Promise<Record<string, {
+  price: number;
+  changePercent: number;
+  rsi?: number;
+  macdHist?: number;
+  sma10?: number;
+  sma20?: number;
+  sma30?: number;
+  sma50?: number;
+  sma100?: number;
+}>> => {
+  if (symbols.length === 0) return {};
+  
+  const formattedSymbols = symbols.map(s => {
+    const sym = s.toUpperCase();
+    if (['BTC', 'ETH', 'SOL', 'XRP', 'XLM', 'HBAR'].includes(sym)) {
+      return `BINANCE:${sym}USDT`;
+    }
+    const exchange = STOCK_EXCHANGES[sym] || 'NASDAQ';
+    const cleanSym = sym === 'ENR1' ? 'ENR' : sym;
+    return `${exchange}:${cleanSym}`;
+  });
+
+  const suffix = timeframe === '1m' ? '|1' : timeframe === '1h' ? '|60' : timeframe === '4h' ? '|240' : '';
+
+  const payload = {
+    symbols: {
+      tickers: formattedSymbols,
+      query: { types: [] }
+    },
+    columns: [
+      "name",
+      "close",
+      "change",
+      `RSI${suffix}`,
+      `MACD.macd${suffix}`,
+      `MACD.signal${suffix}`,
+      `SMA10${suffix}`,
+      `SMA20${suffix}`,
+      `SMA30${suffix}`,
+      `SMA50${suffix}`,
+      `SMA100${suffix}`
+    ]
+  };
+
+  const processResponse = (data: any) => {
+    const results: Record<string, any> = {};
+    if (data.data) {
+      data.data.forEach((item: any) => {
+        const sName = item.s;
+        let symbol = '';
+        
+        if (sName.startsWith('BINANCE:')) {
+          symbol = sName.replace('BINANCE:', '').replace('USDT', '');
+        } else {
+          const parts = sName.split(':');
+          symbol = parts[1] === 'ENR' ? 'ENR1' : parts[1];
+        }
+
+        results[symbol] = {
+          price: item.d[1],
+          changePercent: item.d[2],
+          rsi: item.d[3] !== null ? item.d[3] : undefined,
+          macdHist: item.d[4] !== null && item.d[5] !== null ? item.d[4] - item.d[5] : undefined,
+          sma10: item.d[6] !== null ? item.d[6] : undefined,
+          sma20: item.d[7] !== null ? item.d[7] : undefined,
+          sma30: item.d[8] !== null ? item.d[8] : undefined,
+          sma50: item.d[9] !== null ? item.d[9] : undefined,
+          sma100: item.d[10] !== null ? item.d[10] : undefined
+        };
+      });
+    }
+    return results;
+  };
+
+  // 1. Intentar con el proxy local de Vite (/api-tradingview)
+  try {
+    const response = await fetchWithTimeout('/api-tradingview/global/scan', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(payload)
+    }, 2500);
+
+    if (response.ok) {
+      const data = await response.json();
+      return processResponse(data);
+    }
+  } catch (e) {
+    console.warn('Vite local proxy for TradingView scan failed, trying direct or fallback...', e);
+  }
+
+  // 2. Intentar de forma directa a TradingView (fallback si se despliega en producción)
+  try {
+    const response = await fetchWithTimeout('https://scanner.tradingview.com/global/scan', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(payload)
+    }, 2500);
+
+    if (response.ok) {
+      const data = await response.json();
+      return processResponse(data);
+    }
+  } catch (e) {
+    console.warn('Direct fetch to TradingView failed, trying public corsproxy...', e);
+  }
+
+  // 3. Intentar a través de corsproxy.io (último recurso)
+  try {
+    const proxyUrl = `https://corsproxy.io/?url=${encodeURIComponent('https://scanner.tradingview.com/global/scan')}`;
+    const response = await fetchWithTimeout(proxyUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(payload)
+    }, 2500);
+
+    if (response.ok) {
+      const data = await response.json();
+      return processResponse(data);
+    }
+  } catch (err) {
+    console.error('All attempts to fetch TradingView prices failed:', err);
+  }
+
+  return {};
 };
 
 export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -309,93 +487,201 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
     let cryptoLoaded = false;
     let stockLoaded = false;
 
-    // 1. Cargar Criptomonedas (Binance - Directo, sin proxy)
+    // Obtener símbolos dinámicos
+    const defaultCryptos = ['BTC', 'ETH', 'SOL', 'XRP', 'XLM', 'HBAR'];
+    const defaultStocks = ['AAPL', 'TSLA', 'NVDA', 'TTWO', 'ENR1'];
+
+    const extraCryptos = assetsRef.current
+      .filter(a => a.type === 'crypto' && !defaultCryptos.includes(a.symbol))
+      .map(a => a.symbol);
+    const extraStocks = assetsRef.current
+      .filter(a => a.type === 'stock' && !defaultStocks.includes(a.symbol))
+      .map(a => a.symbol);
+
+    const cryptoSymbols = [...defaultCryptos, ...extraCryptos];
+    const stockSymbols = [...defaultStocks, ...extraStocks];
+
+    // Cargar precios en tiempo real e indicadores de TradingView Scanner para TODOS los activos de forma unificada
+    let tvPrices: Record<string, any> = {};
     try {
-      const cryptoSymbols = ['BTC', 'ETH', 'SOL', 'XRP', 'XLM', 'HBAR'];
+      const allSymbols = [...cryptoSymbols, ...stockSymbols];
+      tvPrices = await fetchTradingViewPrices(allSymbols, tf);
+    } catch (e) {
+      console.warn("Failed fetching live prices from TradingView Scanner on init:", e);
+    }
+
+    // 1. Cargar Criptomonedas (Binance - Con try/catch individual por token para evitar fallos masivos)
+    try {
       const cryptoPromises = cryptoSymbols.map(async (symbol) => {
-        const res = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}USDT&interval=${cryptoInterval}&limit=${cryptoLimit}`);
-        if (!res.ok) throw new Error(`Error API Binance para ${symbol}`);
-        const data = await res.json();
-        const priceHistory = data.map((kline: any) => Number(kline[4]));
-        return { symbol, priceHistory };
+        try {
+          const res = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}USDT&interval=${cryptoInterval}&limit=${cryptoLimit}`);
+          if (!res.ok) throw new Error(`Error API Binance para ${symbol}`);
+          const data = await res.json();
+          const priceHistory = data.map((kline: any) => Number(kline[4]));
+          return { symbol, priceHistory };
+        } catch (e) {
+          console.warn(`Error individual al cargar crypto ${symbol} de Binance:`, e);
+          return null;
+        }
       });
 
-      const fetchedCryptos = await Promise.all(cryptoPromises);
+      const fetchedCryptosRaw = await Promise.all(cryptoPromises);
+      const fetchedCryptos = fetchedCryptosRaw.filter((f): f is { symbol: string, priceHistory: number[] } => f !== null);
 
       currentAssets = currentAssets.map(asset => {
-        const fetched = fetchedCryptos.find(f => f.symbol === asset.symbol);
-        if (fetched && fetched.priceHistory.length >= 2) {
-          const priceHistory = fetched.priceHistory;
-          const lastPrice = priceHistory[priceHistory.length - 1];
-          const prevPrice = priceHistory[priceHistory.length - 2];
-          const changePercent = ((lastPrice - prevPrice) / prevPrice) * 100;
+        if (asset.type === 'crypto') {
+          const fetched = fetchedCryptos.find(f => f.symbol === asset.symbol);
+          const tvData = tvPrices[asset.symbol];
+          
+          let lastPrice = asset.price;
+          let priceHistory = asset.priceHistory;
+          let changePercent = asset.changePercent;
+
+          if (fetched && fetched.priceHistory.length >= 2) {
+            priceHistory = fetched.priceHistory;
+            lastPrice = priceHistory[priceHistory.length - 1];
+            const prevPrice = priceHistory[priceHistory.length - 2];
+            changePercent = ((lastPrice - prevPrice) / prevPrice) * 100;
+          }
+          
           return {
             ...asset,
             price: lastPrice,
             priceHistory,
             changePercent,
+            realBasePrice: lastPrice,
+            tvRsi: tvData?.rsi,
+            tvMacdHist: tvData?.macdHist,
+            tvSma10: tvData?.sma10,
+            tvSma20: tvData?.sma20,
+            tvSma30: tvData?.sma30,
+            tvSma50: tvData?.sma50,
+            tvSma100: tvData?.sma100
           };
         }
         return asset;
       });
       
-      cryptoLoaded = true;
-      addLog(`Datos de mercado cargados de Binance para BTC, ETH, SOL, XRP, XLM y HBAR (Intervalo: ${tf}).`, 'info');
+      cryptoLoaded = fetchedCryptos.length > 0;
+      if (cryptoLoaded) {
+        addLog(`Datos de criptomonedas cargados con éxito desde Binance API.`, 'info');
+      }
     } catch (err) {
-      console.error('Error al conectar con Binance API:', err);
-      addLog('Error al conectar con Binance API. Criptomonedas simuladas.', 'warning');
+      console.error('Error al procesar promesas de Binance:', err);
     }
 
-    // 2. Cargar Acciones (Yahoo Finance - Con proxy para evitar CORS en el navegador)
+    // 2. Cargar Acciones (Yahoo Finance como fallback para historial)
     try {
-      const stockSymbols = ['AAPL', 'TSLA', 'NVDA', 'TTWO', 'ENR1'];
+
+      // 2b. Cargar historial de Yahoo Finance con try/catch individual
       const stockPromises = stockSymbols.map(async (symbol) => {
-        const yahooSymbol = symbol === 'ENR1' ? 'ENR.DE' : symbol;
-        const data = await fetchWithProxy(`https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=${stockInterval}&range=${stockRange}`);
-        const result = data.chart.result[0];
-        const rawHistory: number[] = result.indicators.quote[0].close || [];
-        let filteredHistory = rawHistory.filter((p: any) => p !== null && p !== undefined);
+        try {
+          const yahooSymbol = symbol === 'ENR1' ? 'ENR.DE' : symbol;
+          const data = await fetchWithProxy(`https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=${stockInterval}&range=${stockRange}`);
+          const result = data.chart.result[0];
+          const rawHistory: number[] = result.indicators.quote[0].close || [];
+          let filteredHistory = rawHistory.filter((p: any) => p !== null && p !== undefined);
 
-        // Agrupar si es para 4h
-        if (groupSize > 1) {
-          const aggregated: number[] = [];
-          for (let i = 0; i < filteredHistory.length; i += groupSize) {
-            const chunk = filteredHistory.slice(i, i + groupSize);
-            if (chunk.length > 0) {
-              aggregated.push(chunk[chunk.length - 1]);
+          // Agrupar si es para 4h
+          if (groupSize > 1) {
+            const aggregated: number[] = [];
+            for (let i = 0; i < filteredHistory.length; i += groupSize) {
+              const chunk = filteredHistory.slice(i, i + groupSize);
+              if (chunk.length > 0) {
+                aggregated.push(chunk[chunk.length - 1]);
+              }
             }
+            filteredHistory = aggregated;
           }
-          filteredHistory = aggregated;
-        }
 
-        const priceHistory = filteredHistory.slice(-100).map((p: number) => Number(p.toFixed(2)));
-        return { symbol, priceHistory };
+          const priceHistory = filteredHistory.slice(-100).map((p: number) => Number(p.toFixed(2)));
+          return { symbol, priceHistory };
+        } catch (e) {
+          console.warn(`Error individual al cargar historial de ${symbol} en Yahoo Finance:`, e);
+          return null;
+        }
       });
 
-      const fetchedStocks = await Promise.all(stockPromises);
+      const fetchedStocksRaw = await Promise.all(stockPromises);
+      const fetchedStocks = fetchedStocksRaw.filter((f): f is { symbol: string, priceHistory: number[] } => f !== null);
 
       currentAssets = currentAssets.map(asset => {
-        const fetched = fetchedStocks.find(f => f.symbol === asset.symbol);
-        if (fetched && fetched.priceHistory.length >= 2) {
-          const priceHistory = fetched.priceHistory;
-          const lastPrice = priceHistory[priceHistory.length - 1];
-          const prevPrice = priceHistory[priceHistory.length - 2];
-          const changePercent = ((lastPrice - prevPrice) / prevPrice) * 100;
+        if (asset.type === 'stock') {
+          const fetched = fetchedStocks.find(f => f.symbol === asset.symbol);
+          const tvData = tvPrices[asset.symbol];
+          
+          let lastPrice = tvData?.price || asset.price;
+          let changePercent = tvData?.changePercent || asset.changePercent;
+          let priceHistory: number[] = [];
+
+          if (fetched && fetched.priceHistory.length >= 2) {
+            priceHistory = [...fetched.priceHistory];
+            if (tvData) {
+              priceHistory[priceHistory.length - 1] = tvData.price;
+            } else {
+              lastPrice = priceHistory[priceHistory.length - 1];
+              const prevPrice = priceHistory[priceHistory.length - 2];
+              changePercent = ((lastPrice - prevPrice) / prevPrice) * 100;
+            }
+          } else {
+            // Si Yahoo falló (ej: 429), generamos historial ficticio en base al precio actual y escalado al timeframe
+            const generateHistoryLocal = (p: number, timeframeStr: string): number[] => {
+              const hist: number[] = [];
+              let tfVol = 0.001; // 1m
+              const steps = 60;
+              if (timeframeStr === '1h') {
+                tfVol = 0.004;
+              } else if (timeframeStr === '4h') {
+                tfVol = 0.009;
+              } else if (timeframeStr === '1D') {
+                tfVol = 0.022;
+              }
+              const baseVol = INITIAL_ASSETS_DATA.find((d: any) => d.symbol === asset.symbol)?.volatility || 0.012;
+              const finalVol = baseVol * tfVol * 10;
+              
+              let current = p;
+              hist.push(current);
+              for (let i = 0; i < steps; i++) {
+                const change = current * (Math.random() - 0.5) * 2 * finalVol;
+                current = Math.max(current + change, 0.01);
+                hist.push(current);
+              }
+
+              const finalElement = hist[hist.length - 1];
+              const factor = p / finalElement;
+              return hist.map(val => Number((val * factor).toFixed(2)));
+            };
+            priceHistory = generateHistoryLocal(lastPrice, tf);
+          }
+
           return {
             ...asset,
             price: lastPrice,
             priceHistory,
             changePercent,
+            realBasePrice: lastPrice,
+            tvRsi: tvData?.rsi,
+            tvMacdHist: tvData?.macdHist,
+            tvSma10: tvData?.sma10,
+            tvSma20: tvData?.sma20,
+            tvSma30: tvData?.sma30,
+            tvSma50: tvData?.sma50,
+            tvSma100: tvData?.sma100
           };
         }
         return asset;
       });
 
-      stockLoaded = true;
-      addLog(`Datos de mercado cargados de Yahoo Finance para AAPL, TSLA, NVDA, TTWO y ENR1 (Intervalo: ${tf}).`, 'info');
+      stockLoaded = Object.keys(tvPrices).length > 0 || fetchedStocks.length > 0;
+      if (Object.keys(tvPrices).length > 0) {
+        addLog(`Datos de acciones sincronizados en vivo con TradingView Scanner API.`, 'info');
+      } else if (fetchedStocks.length > 0) {
+        addLog(`Datos de acciones cargados de Yahoo Finance.`, 'info');
+      } else {
+        addLog('Error al cargar cotizaciones de acciones. Usando simulación local.', 'warning');
+      }
     } catch (err) {
-      console.error('Error al conectar con Yahoo Finance:', err);
-      addLog('Error al conectar con Yahoo Finance. Acciones simuladas.', 'warning');
+      console.error('Error general al cargar acciones:', err);
     }
 
     setAssets(currentAssets);
@@ -421,19 +707,7 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       try {
         const queryTerm = activeAsset.type === 'crypto' ? `${activeAsset.name} crypto` : `${activeAsset.name} stock`;
         
-        // Función auxiliar para fetch con timeout
-        const fetchWithTimeout = async (u: string, ms = 4000) => {
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), ms);
-          try {
-            const response = await fetch(u, { signal: controller.signal });
-            clearTimeout(timeoutId);
-            return response;
-          } catch (e) {
-            clearTimeout(timeoutId);
-            throw e;
-          }
-        };
+
 
         // 1. Intentar con ventana corta de 7 días
         let query = encodeURIComponent(`${queryTerm} when:7d`);
@@ -611,7 +885,7 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
   const resetPortfolio = (initialBalance: number) => {
     setBalance(initialBalance);
-    const clearedHoldings = {
+    const clearedHoldings: Record<string, number> = {
       BTC: 0,
       ETH: 0,
       SOL: 0,
@@ -624,6 +898,14 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       XLM: 0,
       HBAR: 0,
     };
+    
+    // También inicializar holdings para cualquier activo externo que esté en la lista
+    assetsRef.current.forEach(asset => {
+      if (!clearedHoldings[asset.symbol]) {
+        clearedHoldings[asset.symbol] = 0;
+      }
+    });
+
     setHoldings(clearedHoldings);
     setTransactions([]);
     
@@ -765,35 +1047,85 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
         lastPeriodRef.current = currentPeriodVal;
       }
 
-      // Obtener precios en vivo si la API de Binance está activa (solo para criptomonedas)
+      // Obtener precios e indicadores en vivo de forma unificada desde TradingView
+      let livePrices: Record<string, any> = {};
       let liveCryptoPrices: { symbol: string, price: number }[] = [];
-      if (isApiLiveRef.current) {
+
+      const activeCryptos = currentAssets.filter(a => a.type === 'crypto').map(a => a.symbol);
+      const activeStocks = currentAssets.filter(a => a.type === 'stock').map(a => a.symbol);
+
+      try {
+        const allSymbols = [...activeCryptos, ...activeStocks];
+        livePrices = await fetchTradingViewPrices(allSymbols, timeframe);
+      } catch (err) {
+        console.warn('Failed fetching live prices from TradingView Scanner in tick:', err);
+      }
+
+      // Fallback de Binance si no obtuvimos todas las cryptos en TradingView
+      const hasCryptosInTv = activeCryptos.every(sym => livePrices[sym] !== undefined);
+      if (!hasCryptosInTv) {
         try {
-          const res = await fetch('https://api.binance.com/api/v3/ticker/price');
+          const res = await fetchWithTimeout('https://api.binance.com/api/v3/ticker/price', {}, 2500);
           if (res.ok) {
             const data = await res.json();
-            liveCryptoPrices = ['BTC', 'ETH', 'SOL', 'XRP', 'XLM', 'HBAR'].map(sym => {
+            liveCryptoPrices = activeCryptos.map(sym => {
               const ticker = data.find((t: any) => t.symbol === `${sym}USDT`);
               return ticker ? { symbol: sym, price: Number(ticker.price) } : null;
             }).filter(Boolean) as any;
           }
         } catch (err) {
-          console.error('Error obteniendo cotizaciones de Binance:', err);
+          // Silencioso
         }
+      }
+
+      const hasLiveCrypto = liveCryptoPrices.length > 0 || activeCryptos.some(sym => livePrices[sym] !== undefined);
+      const hasLiveStock = activeStocks.some(sym => livePrices[sym] !== undefined);
+      const currentLiveState = hasLiveCrypto || hasLiveStock;
+
+      if (currentLiveState !== isApiLiveRef.current) {
+        setIsApiLive(currentLiveState);
       }
 
       // Actualizar el precio final y el historial de TODOS los activos alineados con el timeframe
       nextAssets = nextAssets.map(asset => {
-        // Si hay cotización en vivo (para cryptos), la usamos. Si no (para stocks o modo offline), usamos el precio de nextAssets (de tickAssets)
-        const live = liveCryptoPrices.find(l => l.symbol === asset.symbol);
-        const finalPrice = live ? live.price : asset.price;
+        let finalPrice = asset.price;
+        let changePercent = asset.changePercent;
+        let updatedRealBasePrice = asset.realBasePrice;
+        
+        let tvRsi = asset.tvRsi;
+        let tvMacdHist = asset.tvMacdHist;
+        let tvSma10 = asset.tvSma10;
+        let tvSma20 = asset.tvSma20;
+        let tvSma30 = asset.tvSma30;
+        let tvSma50 = asset.tvSma50;
+        let tvSma100 = asset.tvSma100;
+
+        const tvData = livePrices[asset.symbol];
+        if (tvData) {
+          finalPrice = tvData.price;
+          changePercent = tvData.changePercent;
+          updatedRealBasePrice = tvData.price;
+          
+          tvRsi = tvData.rsi;
+          tvMacdHist = tvData.macdHist;
+          tvSma10 = tvData.sma10;
+          tvSma20 = tvData.sma20;
+          tvSma30 = tvData.sma30;
+          tvSma50 = tvData.sma50;
+          tvSma100 = tvData.sma100;
+        } else if (asset.type === 'crypto') {
+          const live = liveCryptoPrices.find(l => l.symbol === asset.symbol);
+          if (live) {
+            finalPrice = live.price;
+            updatedRealBasePrice = live.price;
+          }
+        }
 
         const history = [...asset.priceHistory];
-        
-        // Si es una acción y el mercado de valores está cerrado, no alteramos su precio histórico
         const isStockClosed = asset.type === 'stock' && isStockMarketClosed();
 
-        if (!isStockClosed) {
+        // Si el mercado de acciones está abierto, o si tenemos datos en vivo (a pesar del cierre), actualizamos la historia
+        if (!(isStockClosed && !livePrices[asset.symbol])) {
           if (isNewPeriod) {
             history.push(finalPrice);
             if (history.length > 100) history.shift();
@@ -807,13 +1139,23 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
         }
 
         const prevPrice = history[history.length - 2] || finalPrice;
-        const changePercent = isStockClosed ? asset.changePercent : (((finalPrice - prevPrice) / prevPrice) * 100);
+        const finalChangePct = (asset.type === 'stock' && livePrices[asset.symbol])
+          ? changePercent
+          : (isStockClosed ? asset.changePercent : (((finalPrice - prevPrice) / prevPrice) * 100));
 
         return {
           ...asset,
           price: finalPrice,
           priceHistory: history,
-          changePercent,
+          changePercent: finalChangePct,
+          realBasePrice: updatedRealBasePrice,
+          tvRsi,
+          tvMacdHist,
+          tvSma10,
+          tvSma20,
+          tvSma30,
+          tvSma50,
+          tvSma100
         };
       });
 
@@ -838,6 +1180,11 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
           const currentPrice = asset.price;
           const currentHolding = holdingsRef.current[asset.symbol] || 0;
 
+          // Calcular soporte y resistencia locales
+          const { support, resistance } = calculateSupportResistance(prices, 20);
+          const isNearSupport = currentPrice <= support * 1.02; // Dentro de 2.0% del soporte
+          const isNearResistance = currentPrice >= resistance * 0.98; // Dentro de 2.0% de la resistencia
+
           // --- ESTRATEGIA RSI ---
           if (bot.strategyType === 'rsi') {
             const rsi = calculateRSI(prices, 14);
@@ -845,11 +1192,19 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
             const overboughtLimit = bot.params.rsiOverbought;
 
             if (rsi < oversoldLimit) {
-              // Condición alcista: RSI en zona de sobreventa -> COMPRAR
-              executeTrade(bot.name, asset.symbol, 'BUY', currentPrice, bot.tradeSizeUsd);
+              if (isNearSupport) {
+                // Condición alcista: RSI en zona de sobreventa -> COMPRAR
+                executeTrade(bot.name, asset.symbol, 'BUY', currentPrice, bot.tradeSizeUsd);
+              } else {
+                addLog(`[${bot.name}] Señal de compra en ${asset.symbol} omitida: precio fuera de soporte (Precio: $${currentPrice.toLocaleString()}, Soporte: $${support.toLocaleString()}).`, 'info');
+              }
             } else if (rsi > overboughtLimit && currentHolding > 0) {
-              // Condición bajista: RSI sobrecomprado -> VENDER
-              executeTrade(bot.name, asset.symbol, 'SELL', currentPrice, bot.tradeSizeUsd);
+              if (isNearResistance) {
+                // Condición bajista: RSI sobrecomprado -> VENDER
+                executeTrade(bot.name, asset.symbol, 'SELL', currentPrice, bot.tradeSizeUsd);
+              } else {
+                addLog(`[${bot.name}] Señal de venta en ${asset.symbol} omitida: precio fuera de resistencia (Precio: $${currentPrice.toLocaleString()}, Resistencia: $${resistance.toLocaleString()}).`, 'info');
+              }
             }
           }
 
@@ -859,7 +1214,6 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
             
             // Crossover alcista: MACD cruza por encima de la señal (Histograma se vuelve positivo)
             // Crossover bajista: MACD cruza por debajo de la señal (Histograma se vuelve negativo)
-            // Necesitamos los últimos dos precios para detectar el cruce exacto
             const prevPrices = prices.slice(0, -1);
             const prevMacdData = calculateMACD(prevPrices);
 
@@ -867,9 +1221,17 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
             const currHist = macdData.histogram;
 
             if (prevHist < 0 && currHist > 0) {
-              executeTrade(bot.name, asset.symbol, 'BUY', currentPrice, bot.tradeSizeUsd);
+              if (isNearSupport) {
+                executeTrade(bot.name, asset.symbol, 'BUY', currentPrice, bot.tradeSizeUsd);
+              } else {
+                addLog(`[${bot.name}] Cruce alcista MACD en ${asset.symbol} omitido por no estar en zona de soporte.`, 'info');
+              }
             } else if (prevHist > 0 && currHist < 0 && currentHolding > 0) {
-              executeTrade(bot.name, asset.symbol, 'SELL', currentPrice, bot.tradeSizeUsd);
+              if (isNearResistance) {
+                executeTrade(bot.name, asset.symbol, 'SELL', currentPrice, bot.tradeSizeUsd);
+              } else {
+                addLog(`[${bot.name}] Cruce bajista MACD en ${asset.symbol} omitido por no estar en zona de resistencia.`, 'info');
+              }
             }
           }
 
@@ -888,9 +1250,17 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
             // Cruce Dorado (Golden Cross): Rápida cruza de abajo hacia arriba de la Lenta -> COMPRA
             // Cruce de Muerte (Death Cross): Rápida cruza hacia abajo de la Lenta -> VENTA
             if (prevFast < prevSlow && currFast > currSlow) {
-              executeTrade(bot.name, asset.symbol, 'BUY', currentPrice, bot.tradeSizeUsd);
+              if (isNearSupport) {
+                executeTrade(bot.name, asset.symbol, 'BUY', currentPrice, bot.tradeSizeUsd);
+              } else {
+                addLog(`[${bot.name}] Cruce Dorado en ${asset.symbol} omitido (precio fuera de soporte).`, 'info');
+              }
             } else if (prevFast > prevSlow && currFast < currSlow && currentHolding > 0) {
-              executeTrade(bot.name, asset.symbol, 'SELL', currentPrice, bot.tradeSizeUsd);
+              if (isNearResistance) {
+                executeTrade(bot.name, asset.symbol, 'SELL', currentPrice, bot.tradeSizeUsd);
+              } else {
+                addLog(`[${bot.name}] Cruce de Muerte en ${asset.symbol} omitido (precio fuera de resistencia).`, 'info');
+              }
             }
           }
 
@@ -921,22 +1291,30 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
             }
 
             if (shouldBuy) {
-              if (asset.type === 'stock') {
-                const pe = asset.peRatio || 50;
-                if (pe < 40) {
-                  addLog(`[${bot.name}] Señal de compra en ${asset.symbol} por ${logReason} (P/E: ${pe}).`, 'info');
-                  executeTrade(bot.name, asset.symbol, 'BUY', currentPrice, bot.tradeSizeUsd);
-                }
+              if (isNearResistance) {
+                addLog(`[${bot.name}] Compra fundamental en ${asset.symbol} bloqueada por zona de resistencia (Precio: $${currentPrice.toLocaleString()}, Resistencia: $${resistance.toLocaleString()}).`, 'info');
               } else {
-                const social = asset.socialVolume || 0;
-                if (social > 4000) {
-                  addLog(`[${bot.name}] Señal de compra en ${asset.symbol} por ${logReason} (Vol. social: ${social}).`, 'info');
-                  executeTrade(bot.name, asset.symbol, 'BUY', currentPrice, bot.tradeSizeUsd);
+                if (asset.type === 'stock') {
+                  const pe = asset.peRatio || 50;
+                  if (pe < 40) {
+                    addLog(`[${bot.name}] Señal de compra en ${asset.symbol} por ${logReason} (P/E: ${pe}).`, 'info');
+                    executeTrade(bot.name, asset.symbol, 'BUY', currentPrice, bot.tradeSizeUsd);
+                  }
+                } else {
+                  const social = asset.socialVolume || 0;
+                  if (social > 4000) {
+                    addLog(`[${bot.name}] Señal de compra en ${asset.symbol} por ${logReason} (Vol. social: ${social}).`, 'info');
+                    executeTrade(bot.name, asset.symbol, 'BUY', currentPrice, bot.tradeSizeUsd);
+                  }
                 }
               }
             } else if (shouldSell && currentHolding > 0) {
-              addLog(`[${bot.name}] Señal de venta en ${asset.symbol} por ${logReason}.`, 'info');
-              executeTrade(bot.name, asset.symbol, 'SELL', currentPrice, bot.tradeSizeUsd);
+              if (isNearSupport) {
+                addLog(`[${bot.name}] Venta fundamental en ${asset.symbol} bloqueada por zona de soporte (Soporte en $${support.toLocaleString()}).`, 'info');
+              } else {
+                addLog(`[${bot.name}] Señal de venta en ${asset.symbol} por ${logReason}.`, 'info');
+                executeTrade(bot.name, asset.symbol, 'SELL', currentPrice, bot.tradeSizeUsd);
+              }
             }
           }
 
@@ -947,7 +1325,7 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
             
             let buySignals = 0;
             let sellSignals = 0;
-            const totalEvaluated = activeStrats.length;
+            let totalEvaluated = activeStrats.length;
 
             if (totalEvaluated > 0) {
               // 1. Evaluar RSI
@@ -1010,17 +1388,36 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
                 }
               }
 
+              // 5. Añadir confirmación de Soporte y Resistencia al Consenso
+              if (isNearSupport) {
+                buySignals++; // Punto de coincidencia adicional
+              }
+              if (isNearResistance) {
+                sellSignals++; // Punto de coincidencia adicional
+              }
+              
+              // Ajustamos la base del total por los puntos adicionales de S/R
+              const totalPossible = totalEvaluated + 1;
+
               // Si se alcanza el umbral de coincidencia de compra
               if (buySignals >= threshold) {
-                const buyConf = Math.round((buySignals / totalEvaluated) * 100);
-                addLog(`[${bot.name}] Señal de compra en ${asset.symbol}: ${buySignals} de ${totalEvaluated} coinciden (Confianza: ${buyConf}%).`, 'info');
-                executeTrade(bot.name, asset.symbol, 'BUY', currentPrice, bot.tradeSizeUsd);
+                if (isNearResistance) {
+                  addLog(`[${bot.name}] Consenso de compra en ${asset.symbol} bloqueado por proximidad a resistencia.`, 'info');
+                } else {
+                  const buyConf = Math.round((buySignals / totalPossible) * 100);
+                  addLog(`[${bot.name}] Consenso de COMPRA en ${asset.symbol}: ${buySignals} de ${totalPossible} indicadores a favor (Confianza: ${buyConf}%).`, 'info');
+                  executeTrade(bot.name, asset.symbol, 'BUY', currentPrice, bot.tradeSizeUsd);
+                }
               } 
               // Si se alcanza el umbral de coincidencia de venta
               else if (sellSignals >= threshold && currentHolding > 0) {
-                const sellConf = Math.round((sellSignals / totalEvaluated) * 100);
-                addLog(`[${bot.name}] Señal de venta en ${asset.symbol}: ${sellSignals} de ${totalEvaluated} coinciden (Confianza: ${sellConf}%).`, 'info');
-                executeTrade(bot.name, asset.symbol, 'SELL', currentPrice, bot.tradeSizeUsd);
+                if (isNearSupport) {
+                  addLog(`[${bot.name}] Consenso de venta en ${asset.symbol} bloqueado por proximidad a soporte.`, 'info');
+                } else {
+                  const sellConf = Math.round((sellSignals / totalPossible) * 100);
+                  addLog(`[${bot.name}] Consenso de VENTA en ${asset.symbol}: ${sellSignals} de ${totalPossible} indicadores a favor (Confianza: ${sellConf}%).`, 'info');
+                  executeTrade(bot.name, asset.symbol, 'SELL', currentPrice, bot.tradeSizeUsd);
+                }
               }
             }
           }
@@ -1060,7 +1457,29 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const poolAsset = externalAssetsPool.find(a => a.symbol === symbol);
     if (!poolAsset) return;
 
-    const startPriceVal = poolAsset.price || 100;
+    const defaultPrices: Record<string, number> = {
+      AMD: 165.42,
+      CEG: 215.18,
+      ASML: 885.30,
+      SMCI: 420.90,
+      VRT: 94.65,
+      RNDR: 7.82,
+      TAO: 385.60,
+      LINK: 15.45,
+      NEAR: 5.92,
+      FET: 2.14,
+      INTC: 35.0,
+      QCOM: 180.0,
+      GE: 150.0,
+      NEE: 70.0,
+      FSLR: 190.0,
+      OP: 2.50,
+      U: 18.0,
+      SONY: 85.0,
+      EA: 135.0,
+      NTDOY: 13.0
+    };
+    const startPriceVal = defaultPrices[symbol.toUpperCase()] || 100;
     
     const generateHistoryLocal = (p: number): number[] => {
       const hist: number[] = [];

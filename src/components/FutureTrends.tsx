@@ -34,7 +34,7 @@ interface ThematicCard {
 
 
 export const FutureTrends: React.FC = () => {
-  const { setActiveAssetId, setActiveTab } = useTrading();
+  const { setActiveAssetId, setActiveTab, addExternalAsset, assets } = useTrading();
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   
   // Estado para el Radar de Descubrimiento
@@ -53,18 +53,9 @@ export const FutureTrends: React.FC = () => {
     const t3 = setTimeout(() => setScanStep(3), 1200);
     const t4 = setTimeout(() => setScanStep(4), 1600);
     const t5 = setTimeout(() => {
-      // Map category ID to Spanish label in externalAssetsPool
-      const categoryMap: { [key: string]: string } = {
-        'ia': 'IA y Hardware',
-        'energy': 'Energía e Infraestructura',
-        'gaming': 'Gaming y Blockbusters',
-        'crypto': 'Web3 y Criptoactivos'
-      };
-
       let filteredPool = externalAssetsPool;
       if (selectedCategory !== 'all') {
-        const targetLabel = categoryMap[selectedCategory];
-        filteredPool = externalAssetsPool.filter(a => a.category === targetLabel);
+        filteredPool = externalAssetsPool.filter(a => a.category === selectedCategory);
       }
 
       // Shuffling and selecting up to 10 assets
@@ -662,6 +653,62 @@ export const FutureTrends: React.FC = () => {
                         +{asset.projectedRoi}%
                       </span>
                     </div>
+                  </div>
+
+                  {/* Add to Alerts / Monitor Button */}
+                  <div style={{ marginTop: '4px' }}>
+                    {assets.some(a => a.symbol === asset.symbol) ? (
+                      <div style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '6px',
+                        background: 'rgba(0, 255, 170, 0.05)',
+                        border: '1px solid rgba(0, 255, 170, 0.15)',
+                        color: 'var(--color-buy)',
+                        padding: '8px 12px',
+                        borderRadius: '8px',
+                        fontSize: '0.8rem',
+                        fontWeight: 700,
+                        width: '100%',
+                        textAlign: 'center'
+                      }}>
+                        <Check size={14} />
+                        <span>Monitoreando</span>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => addExternalAsset(asset.symbol)}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: '6px',
+                          background: 'rgba(95, 93, 236, 0.1)',
+                          border: '1px solid rgba(95, 93, 236, 0.2)',
+                          color: 'var(--accent-primary)',
+                          padding: '8px 12px',
+                          borderRadius: '8px',
+                          fontSize: '0.8rem',
+                          fontWeight: 700,
+                          width: '100%',
+                          cursor: 'pointer',
+                          transition: 'all 0.2s',
+                          outline: 'none'
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.background = 'var(--accent-primary)';
+                          e.currentTarget.style.color = 'white';
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.background = 'rgba(95, 93, 236, 0.1)';
+                          e.currentTarget.style.color = 'var(--accent-primary)';
+                        }}
+                      >
+                        <Plus size={14} />
+                        <span>Añadir a Alertas</span>
+                      </button>
+                    )}
                   </div>
                 </div>
               ))}

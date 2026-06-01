@@ -15,6 +15,15 @@ export interface Asset {
   whaleBalanceChange?: number; // Solo Crypto (Flujo neto de billeteras grandes %)
   sentimentScore: number;      // Sentimiento del mercado de -1.0 (Muy Bajista) a 1.0 (Muy Alcista)
   allowedForBots?: boolean;    // Habilitado para operar con bots
+  realBasePrice?: number;      // Precio de cotización real inicial cargado de la API
+  // Indicadores técnicos en tiempo real de TradingView Scanner API
+  tvRsi?: number;
+  tvMacdHist?: number;
+  tvSma10?: number;
+  tvSma20?: number;
+  tvSma30?: number;
+  tvSma50?: number;
+  tvSma100?: number;
 }
 
 export interface NewsEvent {
@@ -203,6 +212,7 @@ export function generateInitialAssets(): Asset[] {
       socialVolume: data.socialVolume,
       whaleBalanceChange: data.whaleBalanceChange,
       sentimentScore: data.sentimentScore,
+      realBasePrice: data.price,
     };
   });
 }
@@ -390,23 +400,63 @@ export function generateRandomNews(assets: Asset[]): NewsEvent | null {
  * Abre de Lunes a Viernes de 9:30 AM a 4:00 PM EST (15:30 a 22:00 CET en España).
  */
 export function isStockMarketClosed(): boolean {
-  const now = new Date();
-  const day = now.getDay(); // 0 = Domingo, 6 = Sábado
-  
-  // 1. Fines de semana
-  if (day === 0 || day === 6) return true;
-  
-  // 2. Fuera de horario (15:30 a 22:00 CET de Madrid)
-  const hour = now.getHours();
-  const minute = now.getMinutes();
-  const timeInMinutes = hour * 60 + minute;
-  
-  const startMarket = 15 * 60 + 30; // 15:30
-  const endMarket = 22 * 60; // 22:00
-  
-  if (timeInMinutes < startMarket || timeInMinutes >= endMarket) return true;
-  
-  return false;
+  try {
+    // Obtener las partes de la fecha en la zona horaria de Nueva York de forma robusta e independiente de locale local
+    const formatter = new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/New_York",
+      year: "numeric",
+      month: "numeric",
+      day: "numeric",
+      hour: "numeric",
+      minute: "numeric",
+      hourCycle: "h23"
+    });
+    
+    const parts = formatter.formatToParts(new Date());
+    const partValues: Record<string, number> = {};
+    parts.forEach(part => {
+      if (part.type !== 'literal') {
+        partValues[part.type] = parseInt(part.value, 10);
+      }
+    });
+
+    const year = partValues.year;
+    const month = partValues.month;
+    const dayOfMonth = partValues.day;
+    const hour = partValues.hour;
+    const minute = partValues.minute;
+
+    // Calcular el día de la semana para la fecha de Nueva York de forma segura
+    const nyDate = new Date(year, month - 1, dayOfMonth, hour, minute);
+    const day = nyDate.getDay(); // 0 = Domingo, 6 = Sábado
+
+    // 1. Fines de semana
+    if (day === 0 || day === 6) return true;
+
+    // 2. Horario bursátil de Wall Street (9:30 AM a 4:00 PM EST/EDT)
+    const timeInMinutes = hour * 60 + minute;
+    const startMarket = 9 * 60 + 30; // 9:30
+    const endMarket = 16 * 60; // 16:00
+
+    if (timeInMinutes < startMarket || timeInMinutes >= endMarket) return true;
+
+    return false;
+  } catch (e) {
+    // Fallback local en caso de error de internacionalización o soporte de timeZone
+    const now = new Date();
+    const day = now.getDay();
+    if (day === 0 || day === 6) return true;
+    
+    const hour = now.getHours();
+    const minute = now.getMinutes();
+    const timeInMinutes = hour * 60 + minute;
+    
+    const startMarket = 15 * 60 + 30; // 15:30 CET
+    const endMarket = 22 * 60; // 22:00 CET
+    
+    if (timeInMinutes < startMarket || timeInMinutes >= endMarket) return true;
+    return false;
+  }
 }
 
 /**
@@ -432,14 +482,26 @@ export function tickAssets(assets: Asset[], activeNews: NewsEvent[]): Asset[] {
       targetSentiment = asset.sentimentScore * 0.95;
     }
 
-    // Volatilidad del activo
-    const baseVol = INITIAL_ASSETS_DATA.find(d => d.symbol === asset.symbol)?.volatility || 0.01;
+    // Volatilidad del activo: reducir para stocks para evitar variaciones extremas en ticks de 3s
+    let baseVol = INITIAL_ASSETS_DATA.find(d => d.symbol === asset.symbol)?.volatility || 0.01;
+    if (asset.type === 'stock') {
+      baseVol = baseVol * 0.15; // Reducir volatilidad de acciones a un 15% para que sea más estable
+    }
     
     // El sentimiento amplifica o deprime el sesgo de la tendencia
     const marketShock = targetSentiment * baseVol * 1.5;
     const randomWalk = (Math.random() - 0.49) * 2 * baseVol; // Caminata aleatoria equilibrada
     
-    const priceChangePercent = randomWalk + marketShock;
+    let priceChangePercent = randomWalk + marketShock;
+
+    // Fuerza de retorno a la media (reversión a la media) para evitar que se desvíe demasiado del precio real
+    const referencePrice = asset.realBasePrice || (asset.priceHistory && asset.priceHistory.length >= 2 ? asset.priceHistory[asset.priceHistory.length - 2] : asset.price);
+    if (referencePrice > 0) {
+      const deviation = (asset.price - referencePrice) / referencePrice;
+      const reversionSpeed = asset.type === 'stock' ? 0.35 : 0.12; // Fuerza de atracción más fuerte para acciones
+      priceChangePercent -= deviation * reversionSpeed;
+    }
+
     const newPrice = Math.max(0.01, asset.price * (1 + priceChangePercent));
 
     // El historial y changePercent se gestionan en el TradingContext para alinearse con el marco temporal seleccionado

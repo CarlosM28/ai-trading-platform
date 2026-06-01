@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { useTrading } from '../context/TradingContext';
-import { calculateRSI, calculateMACD, calculateSMA } from '../utils/indicators';
+import { calculateRSI, calculateMACD, calculateSMA, calculateSupportResistance } from '../utils/indicators';
 import { 
   Award,
   CheckCircle2,
@@ -9,8 +9,10 @@ import {
   Cpu,
   Zap,
   Gamepad2,
-  Coins
+  Coins,
+  Bot
 } from 'lucide-react';
+import { externalAssetsPool } from '../utils/externalAssets';
 
 interface ExtAssetRec {
   id: string;
@@ -30,6 +32,8 @@ interface ExtAssetRec {
   ratingColor: string;
   ratingBg: string;
   explanation: string;
+  support?: number;
+  resistance?: number;
 }
 
 const getAssetCategory = (symbol: string): 'ia' | 'energy' | 'gaming' | 'crypto' | 'autonomy' => {
@@ -39,6 +43,11 @@ const getAssetCategory = (symbol: string): 'ia' | 'energy' | 'gaming' | 'crypto'
   if (['TSLA'].includes(s)) return 'autonomy';
   if (['TTWO'].includes(s)) return 'gaming';
   if (['ENR1'].includes(s)) return 'energy';
+  
+  // Buscar en pool de activos externos
+  const ext = externalAssetsPool.find(a => a.symbol.toUpperCase() === s);
+  if (ext) return ext.category;
+  
   return 'ia';
 };
 
@@ -226,7 +235,7 @@ const externalAssetsRecs: ExtAssetRec[] = [
 ];
 
 export const Recommendations: React.FC = () => {
-  const { assets, timeframe, changeTimeframe } = useTrading();
+  const { assets, timeframe, changeTimeframe, toggleAssetBotOperation } = useTrading();
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
 
   // Calcular las recomendaciones cuantitativas para todos los activos
@@ -245,6 +254,10 @@ export const Recommendations: React.FC = () => {
       const sma20 = calculateSMA(prices, 20);
       const sma80 = calculateSMA(prices, Math.min(80, prices.length));
       const maTrendLong = sma20 > sma80 ? 'bullish' : 'bearish';
+
+      const { support, resistance } = calculateSupportResistance(prices, 20);
+      const isNearSupport = asset.price <= support * 1.02;
+      const isNearResistance = asset.price >= resistance * 0.98;
 
       // 2. Sistema de puntuación cuantitativo
       // Rango de -5 (Extremadamente Bajista/Venta Fuerte) a +5 (Extremadamente Alcista/Compra Fuerte)
@@ -267,6 +280,10 @@ export const Recommendations: React.FC = () => {
       // Técnica 4: Media Móvil Medio/Largo Plazo (Macro 20/80)
       if (maTrendLong === 'bullish') score += 1.0;
       else score -= 1.0;
+
+      // Técnica 5: Soporte / Resistencia
+      if (isNearSupport) score += 1.0;
+      if (isNearResistance) score -= 1.0;
 
       // Fundamental 1: Sentimiento de noticias
       if (asset.sentimentScore > 0.3) score += 1.5;
@@ -334,12 +351,21 @@ export const Recommendations: React.FC = () => {
         }
       }
 
+      const srContext = isNearSupport 
+        ? ` El precio actual ($${asset.price.toLocaleString(undefined, { minimumFractionDigits: 2 })}) está testeando el soporte clave en $${support.toLocaleString(undefined, { minimumFractionDigits: 2 })}, zona ideal de acumulación.` 
+        : isNearResistance 
+          ? ` Se encuentra en zona de resistencia técnica en $${resistance.toLocaleString(undefined, { minimumFractionDigits: 2 })}, por lo que existe riesgo de rechazo a corto plazo.` 
+          : ` Cotiza de forma estable en un rango intermedio entre el soporte en $${support.toLocaleString(undefined, { minimumFractionDigits: 2 })} y la resistencia en $${resistance.toLocaleString(undefined, { minimumFractionDigits: 2 })}.`;
+      explanation += srContext;
+
       return {
         ...asset,
         rsi,
         macd,
         maTrend,
         maTrendLong,
+        support,
+        resistance,
         score,
         verdict,
         ratingClass,
@@ -363,7 +389,11 @@ export const Recommendations: React.FC = () => {
   // 2. Filtrar activos de descubrimiento (externos)
   const filteredExternalData = useMemo(() => {
     const timeSec = Math.floor(Date.now() / 3000);
-    const mapped = externalAssetsRecs.map(asset => {
+    // Excluir los que ya han sido añadidos a assets
+    const activeSymbols = assets.map(a => a.symbol.toUpperCase());
+    const filteredPool = externalAssetsRecs.filter(a => !activeSymbols.includes(a.symbol.toUpperCase()));
+
+    const mapped = filteredPool.map(asset => {
       const hash = asset.symbol.charCodeAt(0) + (asset.symbol.charCodeAt(1) || 0);
       const priceOffset = Math.sin(timeSec + hash) * 0.002;
       const rsiOffset = Math.sin(timeSec + hash + 1) * 0.8;
@@ -373,6 +403,20 @@ export const Recommendations: React.FC = () => {
       const rsi = Math.max(10, Math.min(90, asset.rsi + rsiOffset));
       const histogram = asset.macd.histogram + macdOffset;
       
+      const support = Number((price * 0.96).toFixed(2));
+      const resistance = Number((price * 1.04).toFixed(2));
+      
+      const isNearSupport = price <= support * 1.02;
+      const isNearResistance = price >= resistance * 0.98;
+      
+      let explanation = asset.explanation;
+      const srContext = isNearSupport 
+        ? ` Cotiza en zona de soporte estimado ($${support.toLocaleString()}).` 
+        : isNearResistance 
+          ? ` En zona de resistencia estimada ($${resistance.toLocaleString()}).` 
+          : ` Niveles clave: soporte est. en $${support.toLocaleString()} y resistencia est. en $${resistance.toLocaleString()}.`;
+      explanation += srContext;
+
       return {
         ...asset,
         price,
@@ -380,7 +424,10 @@ export const Recommendations: React.FC = () => {
         macd: {
           ...asset.macd,
           histogram
-        }
+        },
+        support,
+        resistance,
+        explanation
       };
     });
     
@@ -527,6 +574,94 @@ export const Recommendations: React.FC = () => {
 
       </div>
 
+      {/* Apartado de Acciones Activas para los Bots */}
+      <div className="glass-card" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '16px', border: '1px solid rgba(255,255,255,0.03)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <Bot size={20} color="var(--accent-secondary)" />
+          <div>
+            <h3 style={{ fontSize: '1.15rem', fontWeight: 700, margin: 0 }}>
+              Acciones Activas para los Bots
+            </h3>
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', margin: '4px 0 0 0' }}>
+              Permite o bloquea individualmente la operación autónoma de los bots sobre cada activo financiero.
+            </p>
+          </div>
+        </div>
+
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
+          gap: '12px',
+          marginTop: '6px'
+        }}>
+          {assets.map((asset) => {
+            const isAllowed = asset.allowedForBots !== false;
+            return (
+              <div
+                key={asset.symbol}
+                style={{
+                  background: isAllowed ? 'rgba(0, 240, 255, 0.03)' : 'rgba(0, 0, 0, 0.2)',
+                  border: isAllowed ? '1px solid rgba(0, 240, 255, 0.15)' : '1px solid rgba(255, 255, 255, 0.05)',
+                  borderRadius: '10px',
+                  padding: '10px 12px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: '8px',
+                  transition: 'all 0.2s'
+                }}
+              >
+                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                  <span style={{ fontSize: '0.85rem', fontWeight: 800, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    {asset.symbol}
+                    <span style={{
+                      width: '6px',
+                      height: '6px',
+                      borderRadius: '50%',
+                      background: isAllowed ? 'var(--color-buy)' : 'var(--text-muted)',
+                      boxShadow: isAllowed ? '0 0 8px var(--color-buy)' : 'none',
+                      display: 'inline-block'
+                    }} />
+                  </span>
+                  <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                    {asset.type === 'crypto' ? 'Cripto' : 'Acción'}
+                  </span>
+                </div>
+                
+                {/* Custom Toggle Switch */}
+                <button
+                  onClick={() => toggleAssetBotOperation(asset.symbol)}
+                  style={{
+                    position: 'relative',
+                    width: '36px',
+                    height: '20px',
+                    borderRadius: '10px',
+                    background: isAllowed ? 'var(--accent-primary)' : 'rgba(255,255,255,0.1)',
+                    border: 'none',
+                    cursor: 'pointer',
+                    transition: 'background-color 0.2s',
+                    padding: 0,
+                    outline: 'none'
+                  }}
+                >
+                  <div style={{
+                    position: 'absolute',
+                    top: '2px',
+                    left: isAllowed ? '18px' : '2px',
+                    width: '16px',
+                    height: '16px',
+                    borderRadius: '50%',
+                    background: 'white',
+                    boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
+                    transition: 'left 0.2s'
+                  }} />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
       {/* Sección 1: Activos en Cartera */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -584,13 +719,42 @@ export const Recommendations: React.FC = () => {
                 {/* Card Header */}
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                   <div>
-                    <h3 style={{ fontSize: '1.25rem', fontWeight: 800, display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      {rec.name}
-                      <span style={{ fontSize: '0.75rem', color: 'var(--accent-secondary)', fontWeight: 600 }}>{rec.symbol}</span>
-                    </h3>
-                    <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', marginTop: '2px' }}>
-                      Cotización: <b style={{ color: 'var(--text-main)', marginLeft: '4px', display: 'flex', alignItems: 'center' }}><DollarSign size={12} /> {rec.price.toLocaleString()} USD</b>
-                    </span>
+                    {(() => {
+                      const isExternal = !['BTC', 'ETH', 'SOL', 'AAPL', 'TSLA', 'NVDA', 'TTWO', 'ENR1', 'XRP', 'XLM', 'HBAR'].includes(rec.symbol.toUpperCase());
+                      return (
+                        <>
+                          <h3 style={{ fontSize: '1.25rem', fontWeight: 800, display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            {rec.name}
+                            <span style={{ fontSize: '0.75rem', color: 'var(--accent-secondary)', fontWeight: 600 }}>{rec.symbol}</span>
+                            {isExternal && (
+                              <span style={{
+                                fontSize: '0.65rem',
+                                fontWeight: 700,
+                                textTransform: 'uppercase',
+                                padding: '1px 5px',
+                                borderRadius: '4px',
+                                background: 'rgba(0, 240, 255, 0.08)',
+                                color: 'var(--accent-secondary)',
+                                border: '1px solid rgba(0, 240, 255, 0.15)',
+                                marginLeft: '4px'
+                              }}>
+                                Externo
+                              </span>
+                            )}
+                          </h3>
+                          <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '10px', marginTop: '2px', flexWrap: 'wrap' }}>
+                            <span>Cotización: <b style={{ color: 'var(--text-main)' }}>${rec.price.toLocaleString(undefined, { minimumFractionDigits: 2 })} USD</b></span>
+                            <span style={{ color: 'rgba(255,255,255,0.1)' }}>|</span>
+                            <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                              <span>🤖 Bots:</span>
+                              <b style={{ color: rec.allowedForBots !== false ? 'var(--color-buy)' : 'var(--color-sell)' }}>
+                                {rec.allowedForBots !== false ? 'Permitidos' : 'Pausados'}
+                              </b>
+                            </span>
+                          </span>
+                        </>
+                      );
+                    })()}
                   </div>
 
                   {/* Rating Badge */}
@@ -666,6 +830,20 @@ export const Recommendations: React.FC = () => {
                       <b style={{ color: 'var(--text-main)' }}>{rec.socialVolume || 'N/A'}/h</b>
                     </div>
                   )}
+
+                  <div style={{ display: 'flex', justifyContent: 'space-between', borderRight: '1px solid rgba(255,255,255,0.05)', paddingRight: '8px', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '8px' }}>
+                    <span style={{ color: 'var(--text-muted)' }}>Soporte (20):</span>
+                    <b style={{ color: 'var(--color-buy)' }}>
+                      ${rec.support?.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                    </b>
+                  </div>
+
+                  <div style={{ display: 'flex', justifyContent: 'space-between', paddingLeft: '4px', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '8px' }}>
+                    <span style={{ color: 'var(--text-muted)' }}>Resistencia (20):</span>
+                    <b style={{ color: 'var(--color-sell)' }}>
+                      ${rec.resistance?.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                    </b>
+                  </div>
                 </div>
 
                 {/* Analytical reasoning */}
@@ -834,6 +1012,20 @@ export const Recommendations: React.FC = () => {
                       <b style={{ color: 'var(--text-main)' }}>{rec.socialVolume || 'N/A'}/h</b>
                     </div>
                   )}
+
+                  <div style={{ display: 'flex', justifyContent: 'space-between', borderRight: '1px solid rgba(255,255,255,0.05)', paddingRight: '8px', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '8px' }}>
+                    <span style={{ color: 'var(--text-muted)' }}>Soporte (Est.):</span>
+                    <b style={{ color: 'var(--color-buy)' }}>
+                      ${rec.support?.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                    </b>
+                  </div>
+
+                  <div style={{ display: 'flex', justifyContent: 'space-between', paddingLeft: '4px', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '8px' }}>
+                    <span style={{ color: 'var(--text-muted)' }}>Resistencia (Est.):</span>
+                    <b style={{ color: 'var(--color-sell)' }}>
+                      ${rec.resistance?.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                    </b>
+                  </div>
                 </div>
 
                 {/* Analytical reasoning */}

@@ -10,6 +10,11 @@ export default defineConfig({
         target: 'https://query1.finance.yahoo.com',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api-yahoo/, '')
+      },
+      '/api-tradingview': {
+        target: 'https://scanner.tradingview.com',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api-tradingview/, '')
       }
     }
   }

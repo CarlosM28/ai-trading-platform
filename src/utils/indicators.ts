@@ -111,3 +111,103 @@ export function calculateMACD(
     histogram: currentMacd - currentSignal,
   };
 }
+
+export interface SupportResistanceResult {
+  support: number;
+  resistance: number;
+}
+
+/**
+ * Calcula dinámicamente los niveles de soporte y resistencia (mínimos y máximos históricos).
+ * Excluye la vela actual (último elemento) para detectar niveles históricos reales.
+ */
+export function calculateSupportResistance(prices: number[], windowSize: number = 20): SupportResistanceResult {
+  if (prices.length < 2) {
+    const currentPrice = prices[0] || 0;
+    return { support: currentPrice, resistance: currentPrice };
+  }
+
+  // Excluir el último precio (vela actual que está fluctuando)
+  const historicalPrices = prices.slice(0, -1);
+  const actualWindow = Math.min(windowSize, historicalPrices.length);
+  const slice = historicalPrices.slice(-actualWindow);
+
+  if (slice.length === 0) {
+    const currentPrice = prices[prices.length - 1] || 0;
+    return { support: currentPrice, resistance: currentPrice };
+  }
+
+  const support = Math.min(...slice);
+  const resistance = Math.max(...slice);
+
+  return { support, resistance };
+}
+
+export interface BollingerBandsResult {
+  upper: number;
+  middle: number;
+  lower: number;
+}
+
+/**
+ * Calcula las Bandas de Bollinger (media móvil simple de 20 periodos +/- 2 desviaciones estándar).
+ */
+export function calculateBollingerBands(prices: number[], period: number = 20): BollingerBandsResult {
+  if (prices.length < period) {
+    const currentPrice = prices[prices.length - 1] || 0;
+    return { upper: currentPrice, middle: currentPrice, lower: currentPrice };
+  }
+
+  const slice = prices.slice(-period);
+  const middle = calculateSMA(prices, period);
+  
+  const variance = slice.reduce((acc, val) => acc + Math.pow(val - middle, 2), 0) / period;
+  const stdDev = Math.sqrt(variance);
+
+  return {
+    upper: Number((middle + 2 * stdDev).toFixed(2)),
+    middle: Number(middle.toFixed(2)),
+    lower: Number((middle - 2 * stdDev).toFixed(2))
+  };
+}
+
+export interface FibonacciLevelsResult {
+  high: number;
+  low: number;
+  level236: number;
+  level382: number;
+  level500: number;
+  level618: number;
+}
+
+/**
+ * Calcula los niveles clave de retroceso de Fibonacci en base al rango de una ventana de tiempo.
+ */
+export function calculateFibonacciLevels(prices: number[], windowSize: number = 50): FibonacciLevelsResult {
+  if (prices.length < 2) {
+    const currentPrice = prices[0] || 0;
+    return {
+      high: currentPrice,
+      low: currentPrice,
+      level236: currentPrice,
+      level382: currentPrice,
+      level500: currentPrice,
+      level618: currentPrice
+    };
+  }
+
+  const slice = prices.slice(-windowSize);
+  const high = Math.max(...slice);
+  const low = Math.min(...slice);
+  const diff = high - low;
+
+  return {
+    high,
+    low,
+    level236: Number((low + diff * 0.236).toFixed(2)),
+    level382: Number((low + diff * 0.382).toFixed(2)),
+    level500: Number((low + diff * 0.5).toFixed(2)),
+    level618: Number((low + diff * 0.618).toFixed(2))
+  };
+}
+
