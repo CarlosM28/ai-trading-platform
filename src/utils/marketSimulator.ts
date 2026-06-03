@@ -35,6 +35,8 @@ export interface NewsEvent {
   score: number; // -1.0 a 1.0
   assetSymbol: string;
   link?: string;
+  source?: 'google' | 'twitter' | 'simulator';
+  rawDate?: string;
 }
 
 // Historial inicial para que los indicadores funcionen de inmediato (al menos 35 puntos)

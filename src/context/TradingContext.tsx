@@ -62,6 +62,9 @@ export interface AppApiConfig {
   alpacaApiKey: string;
   alpacaApiSecret: string;
   alpacaConnected: boolean;
+  rapidApiKey?: string;
+  rapidApiHost?: string;
+  rapidApiConnected?: boolean;
 }
 
 interface TradingContextType {
@@ -328,6 +331,98 @@ const fetchTradingViewPrices = async (
   return {};
 };
 
+// Helper function to fetch tweets from RapidAPI
+async function fetchTweetsFromRapidAPI(
+  symbol: string,
+  name: string,
+  apiKey: string,
+  host: string
+): Promise<NewsEvent[]> {
+  try {
+    const queryTerm = encodeURIComponent(`$${symbol.toUpperCase()} OR ${name}`);
+    let url = '';
+    
+    if (host === 'twitter-api45.p.rapidapi.com') {
+      url = `https://twitter-api45.p.rapidapi.com/search.php?query=${queryTerm}`;
+    } else {
+      url = `https://${host}/search?query=${queryTerm}`;
+    }
+
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'x-rapidapi-key': apiKey,
+        'x-rapidapi-host': host
+      }
+    });
+
+    if (!response.ok) {
+      console.warn(`RapidAPI request failed with status: ${response.status}`);
+      return [];
+    }
+
+    const data = await response.json();
+    let tweets: any[] = [];
+    
+    if (data.timeline && Array.isArray(data.timeline)) {
+      tweets = data.timeline;
+    } else if (data.results && Array.isArray(data.results)) {
+      tweets = data.results;
+    } else if (data.tweets && Array.isArray(data.tweets)) {
+      tweets = data.tweets;
+    } else if (data.data && Array.isArray(data.data)) {
+      tweets = data.data;
+    } else if (Array.isArray(data)) {
+      tweets = data;
+    }
+
+    const newsEvents: NewsEvent[] = tweets.map((tweet: any) => {
+      const tweetId = tweet.tweet_id || tweet.id || Math.random().toString();
+      const text = tweet.text || tweet.full_text || tweet.content || '';
+      
+      // Intentar extraer el usuario
+      const screenName = tweet.user?.screen_name || tweet.user?.username || 'TwitterUser';
+      const userName = tweet.user?.name || 'Usuario de X';
+      
+      // Parsear fecha
+      const dateStr = tweet.created_at || tweet.timestamp || new Date().toISOString();
+      const date = new Date(dateStr);
+      const timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' ' + date.toLocaleDateString([], { day: '2-digit', month: '2-digit' });
+
+      // Sentimiento simple
+      const lowerText = text.toLowerCase();
+      let impact: 'positive' | 'negative' | 'neutral' = 'neutral';
+      let score = 0;
+
+      if (lowerText.includes('bullish') || lowerText.includes('buy') || lowerText.includes('long') || lowerText.includes('moon') || lowerText.includes('pump') || lowerText.includes('alza') || lowerText.includes('subida')) {
+        impact = 'positive';
+        score = 0.3;
+      } else if (lowerText.includes('bearish') || lowerText.includes('sell') || lowerText.includes('short') || lowerText.includes('dump') || lowerText.includes('crash') || lowerText.includes('caida') || lowerText.includes('bajada')) {
+        impact = 'negative';
+        score = -0.3;
+      }
+
+      return {
+        id: `tweet-${tweetId}`,
+        timestamp: timeStr,
+        headline: `𝕏 | @${screenName} (${userName})`,
+        content: text,
+        impact,
+        score,
+        assetSymbol: symbol.toUpperCase(),
+        link: `https://x.com/${screenName}/status/${tweetId}`,
+        source: 'twitter',
+        rawDate: date.toISOString()
+      } as NewsEvent;
+    });
+
+    return newsEvents;
+  } catch (err) {
+    console.error('Error fetching tweets from RapidAPI:', err);
+    return [];
+  }
+}
+
 export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [activeAssetId, setActiveAssetId] = useState('btc');
@@ -388,6 +483,9 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       alpacaApiKey: '',
       alpacaApiSecret: '',
       alpacaConnected: false,
+      rapidApiKey: '',
+      rapidApiHost: 'twitter-api45.p.rapidapi.com',
+      rapidApiConnected: false,
     };
   });
 
@@ -805,7 +903,7 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
     loadMarketData(timeframe);
   }, [timeframe]);
 
-  // Carga de noticias reales para el activo seleccionado (Google News RSS con Filtro Temporal)
+  // Carga de noticias reales para el activo seleccionado (Google News RSS con Filtro Temporal + X/Twitter)
   useEffect(() => {
     const fetchRealNewsForAsset = async () => {
       const activeAsset = assets.find(a => a.id === activeAssetId);
@@ -814,12 +912,13 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       setIsLoadingRealNews(true);
       setRealNews([]); // Limpiar noticias anteriores de inmediato para evitar mostrar noticias del activo previo
       
+      const combinedNewsList: NewsEvent[] = [];
+
+      // 1. Obtener noticias de Google News RSS
       try {
         const queryTerm = activeAsset.type === 'crypto' ? `${activeAsset.name} crypto` : `${activeAsset.name} stock`;
-        
 
-
-        // 1. Intentar con ventana corta de 7 días
+        // Intentar con ventana corta de 7 días
         let query = encodeURIComponent(`${queryTerm} when:7d`);
         let url = `https://news.google.com/rss/search?q=${query}&hl=es&gl=ES&ceid=ES:es&_cb=${Date.now()}`;
         
@@ -842,7 +941,7 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
           }
         }
 
-        // 2. Si no hay noticias, intentar con ventana más amplia (30 días)
+        // Si no hay noticias, intentar con ventana más amplia (30 días)
         if (!xmlText || !xmlText.includes('<item>')) {
           query = encodeURIComponent(`${queryTerm} when:30d`);
           url = `https://news.google.com/rss/search?q=${query}&hl=es&gl=ES&ceid=ES:es&_cb=${Date.now()}`;
@@ -859,7 +958,7 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
           }
         }
 
-        // 3. Si sigue vacío, quitar restricción temporal
+        // Si sigue vacío, quitar restricción temporal
         if (!xmlText || !xmlText.includes('<item>')) {
           query = encodeURIComponent(queryTerm);
           url = `https://news.google.com/rss/search?q=${query}&hl=es&gl=ES&ceid=ES:es&_cb=${Date.now()}`;
@@ -876,70 +975,89 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
           }
         }
 
-        if (!xmlText) {
-          setRealNews([]);
-          setIsLoadingRealNews(false);
-          return;
-        }
+        if (xmlText) {
+          const parser = new DOMParser();
+          const xmlDoc = parser.parseFromString(xmlText, 'text/xml');
+          const items = xmlDoc.getElementsByTagName('item');
 
-        const parser = new DOMParser();
-        const xmlDoc = parser.parseFromString(xmlText, 'text/xml');
-        const items = xmlDoc.getElementsByTagName('item');
+          for (let i = 0; i < Math.min(items.length, 12); i++) {
+            const item = items[i];
+            const fullTitle = item.getElementsByTagName('title')[0]?.textContent || '';
+            const description = item.getElementsByTagName('description')[0]?.textContent || '';
+            const pubDate = item.getElementsByTagName('pubDate')[0]?.textContent || '';
+            const link = item.getElementsByTagName('link')[0]?.textContent || '';
 
-        const newsList: NewsEvent[] = [];
-        for (let i = 0; i < Math.min(items.length, 12); i++) {
-          const item = items[i];
-          const fullTitle = item.getElementsByTagName('title')[0]?.textContent || '';
-          const description = item.getElementsByTagName('description')[0]?.textContent || '';
-          const pubDate = item.getElementsByTagName('pubDate')[0]?.textContent || '';
-          const link = item.getElementsByTagName('link')[0]?.textContent || '';
+            const date = new Date(pubDate);
+            const timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' ' + date.toLocaleDateString([], { day: '2-digit', month: '2-digit' });
 
-          const date = new Date(pubDate);
-          const timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' ' + date.toLocaleDateString([], { day: '2-digit', month: '2-digit' });
+            // Separar título y editorial
+            const parts = fullTitle.split(' - ');
+            const publisher = parts.length > 1 ? parts.pop() : 'Google News';
+            const headline = parts.join(' - ');
 
-          // Separar título y editorial
-          const parts = fullTitle.split(' - ');
-          const publisher = parts.length > 1 ? parts.pop() : 'Google News';
-          const headline = parts.join(' - ');
+            const lowerTitle = headline.toLowerCase();
+            let impact: 'positive' | 'negative' | 'neutral' = 'neutral';
+            let score = 0;
 
-          const lowerTitle = headline.toLowerCase();
-          let impact: 'positive' | 'negative' | 'neutral' = 'neutral';
-          let score = 0;
+            if (lowerTitle.includes('cae') || lowerTitle.includes('baja') || lowerTitle.includes('multa') || lowerTitle.includes('demanda') || lowerTitle.includes('caída') || lowerTitle.includes('crisis') || lowerTitle.includes('pérdidas') || lowerTitle.includes('retraso') || lowerTitle.includes('desploma') || lowerTitle.includes('down') || lowerTitle.includes('fall') || lowerTitle.includes('drop') || lowerTitle.includes('decline') || lowerTitle.includes('sue') || lowerTitle.includes('risk')) {
+              impact = 'negative';
+              score = -0.35;
+            } else if (lowerTitle.includes('sube') || lowerTitle.includes('récord') || lowerTitle.includes('crece') || lowerTitle.includes('lanzamiento') || lowerTitle.includes('éxito') || lowerTitle.includes('ganancias') || lowerTitle.includes('aprobación') || lowerTitle.includes('alianza') || lowerTitle.includes('up') || lowerTitle.includes('rise') || lowerTitle.includes('gain') || lowerTitle.includes('growth') || lowerTitle.includes('launch') || lowerTitle.includes('partnership')) {
+              impact = 'positive';
+              score = 0.35;
+            }
 
-          if (lowerTitle.includes('cae') || lowerTitle.includes('baja') || lowerTitle.includes('multa') || lowerTitle.includes('demanda') || lowerTitle.includes('caída') || lowerTitle.includes('crisis') || lowerTitle.includes('pérdidas') || lowerTitle.includes('retraso') || lowerTitle.includes('desploma') || lowerTitle.includes('down') || lowerTitle.includes('fall') || lowerTitle.includes('drop') || lowerTitle.includes('decline') || lowerTitle.includes('sue') || lowerTitle.includes('risk')) {
-            impact = 'negative';
-            score = -0.35;
-          } else if (lowerTitle.includes('sube') || lowerTitle.includes('récord') || lowerTitle.includes('crece') || lowerTitle.includes('lanzamiento') || lowerTitle.includes('éxito') || lowerTitle.includes('ganancias') || lowerTitle.includes('aprobación') || lowerTitle.includes('alianza') || lowerTitle.includes('up') || lowerTitle.includes('rise') || lowerTitle.includes('gain') || lowerTitle.includes('growth') || lowerTitle.includes('launch') || lowerTitle.includes('partnership')) {
-            impact = 'positive';
-            score = 0.35;
+            // Limpiar descripción de tags HTML
+            const cleanDesc = description.replace(/<[^>]*>/g, '').slice(0, 160) + (description.length > 160 ? '...' : '');
+
+            combinedNewsList.push({
+              id: Math.random().toString(36).substring(2, 9),
+              timestamp: timeStr,
+              headline,
+              content: cleanDesc || `Publicado por ${publisher}. Haz clic para ver el artículo original en detalle.`,
+              impact,
+              score,
+              assetSymbol: activeAsset.symbol,
+              link,
+              source: 'google',
+              rawDate: date.toISOString()
+            });
           }
-
-          // Limpiar descripción de tags HTML
-          const cleanDesc = description.replace(/<[^>]*>/g, '').slice(0, 160) + (description.length > 160 ? '...' : '');
-
-          newsList.push({
-            id: Math.random().toString(36).substring(2, 9),
-            timestamp: timeStr,
-            headline,
-            content: cleanDesc || `Publicado por ${publisher}. Haz clic para ver el artículo original en detalle.`,
-            impact,
-            score,
-            assetSymbol: activeAsset.symbol,
-            link
-          });
         }
-
-        setRealNews(newsList);
       } catch (err) {
         console.error('Error al cargar noticias de Google News:', err);
-        setRealNews([]);
-      } finally {
-        setIsLoadingRealNews(false);
       }
+
+      // 2. Obtener tweets de X/Twitter si la API está conectada
+      if (apiConfig.rapidApiConnected && apiConfig.rapidApiKey && apiConfig.rapidApiHost) {
+        try {
+          const tweets = await fetchTweetsFromRapidAPI(
+            activeAsset.symbol,
+            activeAsset.name,
+            apiConfig.rapidApiKey,
+            apiConfig.rapidApiHost
+          );
+          if (tweets && tweets.length > 0) {
+            combinedNewsList.push(...tweets);
+          }
+        } catch (err) {
+          console.error('Error al cargar tweets de X:', err);
+        }
+      }
+
+      // 3. Ordenar todo por fecha rawDate descendente
+      combinedNewsList.sort((a, b) => {
+        const dateA = a.rawDate ? new Date(a.rawDate).getTime() : 0;
+        const dateB = b.rawDate ? new Date(b.rawDate).getTime() : 0;
+        return dateB - dateA;
+      });
+
+      setRealNews(combinedNewsList);
+      setIsLoadingRealNews(false);
     };
 
     fetchRealNewsForAsset();
-  }, [activeAssetId, assets.length]);
+  }, [activeAssetId, assets.length, apiConfig.rapidApiConnected, apiConfig.rapidApiKey, apiConfig.rapidApiHost]);
 
   useEffect(() => {
     // Generar historial de cartera inicial
