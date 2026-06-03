@@ -469,26 +469,25 @@ export function analyzeAsset(asset: Asset): QuantAnalysisResult {
 function generateExplanation(
   asset: Asset,
   verdict: Verdict,
-  totalScore: number,
+  _totalScore: number,
   confidence: number,
-  rsi: number,
-  macd: { histogram: number },
-  maTrend: string,
-  maTrendLong: string,
+  _rsi: number,
+  _macd: { histogram: number },
+  _maTrend: string,
+  _maTrendLong: string,
   support: number,
   resistance: number,
   priceBelowSupport: boolean,
   priceAboveResistance: boolean,
   isNearSupport: boolean,
   isNearResistance: boolean,
-  roc: number,
+  _roc: number,
   divergence: DivergenceResult,
   contradictions: string[],
   factors: ScoreFactor[],
   riskLevel: string
 ): string {
   const parts: string[] = [];
-  const isCrypto = asset.type === 'crypto';
   const priceFmt = asset.price.toLocaleString(undefined, { minimumFractionDigits: 2 });
   const supportFmt = support.toLocaleString(undefined, { minimumFractionDigits: 2 });
   const resistanceFmt = resistance.toLocaleString(undefined, { minimumFractionDigits: 2 });

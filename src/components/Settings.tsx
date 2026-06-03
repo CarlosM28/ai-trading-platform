@@ -4,9 +4,20 @@ import {
   Sliders, 
   RefreshCw, 
   Key, 
-  CheckCircle2,
-  Twitter
+  CheckCircle2
 } from 'lucide-react';
+
+const XIcon: React.FC<{ size?: number; color?: string; style?: React.CSSProperties }> = ({ size = 18, color = 'currentColor', style }) => (
+  <svg 
+    viewBox="0 0 24 24" 
+    width={size} 
+    height={size} 
+    fill={color} 
+    style={{ display: 'inline-block', verticalAlign: 'middle', ...style }}
+  >
+    <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
+  </svg>
+);
 
 export const Settings: React.FC = () => {
   const { 
@@ -498,7 +509,7 @@ export const Settings: React.FC = () => {
           {/* Card 3: X (Twitter) via RapidAPI */}
           <div className="glass-card" style={{ padding: '24px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
-              <Twitter size={18} color="#1DA1F2" />
+              <XIcon size={18} color="#1DA1F2" />
               <h3 style={{ fontSize: '1.1rem', fontWeight: 700 }}>Conexión con X (RapidAPI)</h3>
             </div>
             

@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { useTrading } from '../context/TradingContext';
-import { analyzeAsset, type QuantAnalysisResult, type Verdict } from '../utils/quantAnalysis';
+import { analyzeAsset, type Verdict } from '../utils/quantAnalysis';
 import { 
   Award,
   CheckCircle2,
