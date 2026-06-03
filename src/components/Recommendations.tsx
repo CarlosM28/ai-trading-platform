@@ -9,8 +9,7 @@ import {
   Cpu,
   Zap,
   Gamepad2,
-  Coins,
-  Bot
+  Coins
 } from 'lucide-react';
 import { externalAssetsPool } from '../utils/externalAssets';
 
@@ -235,7 +234,7 @@ const externalAssetsRecs: ExtAssetRec[] = [
 ];
 
 export const Recommendations: React.FC = () => {
-  const { assets, timeframe, changeTimeframe, toggleAssetBotOperation } = useTrading();
+  const { assets, timeframe, changeTimeframe } = useTrading();
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
 
   // Calcular las recomendaciones cuantitativas para todos los activos
@@ -471,7 +470,7 @@ export const Recommendations: React.FC = () => {
         }}>
           <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 600 }}>Periodo:</span>
           <div style={{ display: 'flex', gap: '4px', background: 'rgba(0,0,0,0.2)', padding: '2px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.03)' }}>
-            {(['1m', '1h', '4h', '1D'] as const).map((tf) => (
+            {(['1m', '1h', '4h', '1D', '5D', '1M', '6M', '1Y'] as const).map((tf) => (
               <button
                 key={tf}
                 onClick={() => changeTimeframe(tf)}
@@ -572,94 +571,6 @@ export const Recommendations: React.FC = () => {
           </div>
         </div>
 
-      </div>
-
-      {/* Apartado de Acciones Activas para los Bots */}
-      <div className="glass-card" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '16px', border: '1px solid rgba(255,255,255,0.03)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <Bot size={20} color="var(--accent-secondary)" />
-          <div>
-            <h3 style={{ fontSize: '1.15rem', fontWeight: 700, margin: 0 }}>
-              Acciones Activas para los Bots
-            </h3>
-            <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', margin: '4px 0 0 0' }}>
-              Permite o bloquea individualmente la operación autónoma de los bots sobre cada activo financiero.
-            </p>
-          </div>
-        </div>
-
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
-          gap: '12px',
-          marginTop: '6px'
-        }}>
-          {assets.map((asset) => {
-            const isAllowed = asset.allowedForBots !== false;
-            return (
-              <div
-                key={asset.symbol}
-                style={{
-                  background: isAllowed ? 'rgba(0, 240, 255, 0.03)' : 'rgba(0, 0, 0, 0.2)',
-                  border: isAllowed ? '1px solid rgba(0, 240, 255, 0.15)' : '1px solid rgba(255, 255, 255, 0.05)',
-                  borderRadius: '10px',
-                  padding: '10px 12px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  gap: '8px',
-                  transition: 'all 0.2s'
-                }}
-              >
-                <div style={{ display: 'flex', flexDirection: 'column' }}>
-                  <span style={{ fontSize: '0.85rem', fontWeight: 800, color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    {asset.symbol}
-                    <span style={{
-                      width: '6px',
-                      height: '6px',
-                      borderRadius: '50%',
-                      background: isAllowed ? 'var(--color-buy)' : 'var(--text-muted)',
-                      boxShadow: isAllowed ? '0 0 8px var(--color-buy)' : 'none',
-                      display: 'inline-block'
-                    }} />
-                  </span>
-                  <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-                    {asset.type === 'crypto' ? 'Cripto' : 'Acción'}
-                  </span>
-                </div>
-                
-                {/* Custom Toggle Switch */}
-                <button
-                  onClick={() => toggleAssetBotOperation(asset.symbol)}
-                  style={{
-                    position: 'relative',
-                    width: '36px',
-                    height: '20px',
-                    borderRadius: '10px',
-                    background: isAllowed ? 'var(--accent-primary)' : 'rgba(255,255,255,0.1)',
-                    border: 'none',
-                    cursor: 'pointer',
-                    transition: 'background-color 0.2s',
-                    padding: 0,
-                    outline: 'none'
-                  }}
-                >
-                  <div style={{
-                    position: 'absolute',
-                    top: '2px',
-                    left: isAllowed ? '18px' : '2px',
-                    width: '16px',
-                    height: '16px',
-                    borderRadius: '50%',
-                    background: 'white',
-                    boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
-                    transition: 'left 0.2s'
-                  }} />
-                </button>
-              </div>
-            );
-          })}
-        </div>
       </div>
 
       {/* Sección 1: Activos en Cartera */}

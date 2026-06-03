@@ -1,7 +1,14 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
-import { type Asset, type NewsEvent, generateInitialAssets, tickAssets, generateRandomNews, INITIAL_ASSETS_DATA } from '../utils/marketSimulator';
+import { type Asset, type NewsEvent, generateInitialAssets, generateRandomNews, INITIAL_ASSETS_DATA } from '../utils/marketSimulator';
 import { calculateRSI, calculateMACD, calculateSMA, calculateSupportResistance } from '../utils/indicators';
 import { externalAssetsPool } from '../utils/externalAssets';
+import {
+  fetchBinanceAccount,
+  executeBinanceOrder,
+  fetchAlpacaAccount,
+  fetchAlpacaPositions,
+  executeAlpacaOrder
+} from '../utils/apiSync';
 
 export interface BotConfig {
   id: string;
@@ -44,6 +51,19 @@ export interface PortfolioHistoryPoint {
   totalValue: number;
 }
 
+export interface AppApiConfig {
+  apiKey: string;
+  apiSecret: string;
+  exchange: string;
+  isConnected: boolean;
+  binanceApiKey: string;
+  binanceApiSecret: string;
+  binanceConnected: boolean;
+  alpacaApiKey: string;
+  alpacaApiSecret: string;
+  alpacaConnected: boolean;
+}
+
 interface TradingContextType {
   activeTab: string;
   setActiveTab: (tab: string) => void;
@@ -63,12 +83,12 @@ interface TradingContextType {
   resetPortfolio: (initialBalance: number) => void;
   portfolioValueHistory: PortfolioHistoryPoint[];
   triggerManualOrder: (symbol: string, type: 'BUY' | 'SELL', amountUsd: number) => void;
-  apiConfig: { apiKey: string; apiSecret: string; exchange: string; isConnected: boolean };
-  setApiConfig: React.Dispatch<React.SetStateAction<{ apiKey: string; apiSecret: string; exchange: string; isConnected: boolean }>>;
+  apiConfig: AppApiConfig;
+  setApiConfig: React.Dispatch<React.SetStateAction<AppApiConfig>>;
   isLoading: boolean;
   isApiLive: boolean;
-  timeframe: '1m' | '1h' | '4h' | '1D';
-  changeTimeframe: (tf: '1m' | '1h' | '4h' | '1D') => void;
+  timeframe: '1m' | '1h' | '4h' | '1D' | '5D' | '1M' | '6M' | '1Y';
+  changeTimeframe: (tf: '1m' | '1h' | '4h' | '1D' | '5D' | '1M' | '6M' | '1Y') => void;
   realNews: NewsEvent[];
   isLoadingRealNews: boolean;
   addExternalAsset: (symbol: string) => void;
@@ -118,11 +138,15 @@ const fetchWithProxy = async (url: string) => {
   throw new Error(`All proxy attempts failed for ${url}`);
 };
 
-const getCurrentPeriodValue = (tf: '1m' | '1h' | '4h' | '1D') => {
+const getCurrentPeriodValue = (tf: '1m' | '1h' | '4h' | '1D' | '5D' | '1M' | '6M' | '1Y') => {
   const now = new Date();
   if (tf === '1m') return now.getMinutes();
   if (tf === '1h') return now.getHours();
   if (tf === '4h') return Math.floor(now.getHours() / 4);
+  if (tf === '5D') return Math.floor(now.getDate() / 5);
+  if (tf === '1M') return now.getMonth();
+  if (tf === '6M') return Math.floor(now.getMonth() / 6);
+  if (tf === '1Y') return now.getFullYear();
   return now.getDate(); // 1D
 };
 
@@ -170,7 +194,7 @@ const fetchWithTimeout = async (url: string, optionsOrMs: RequestInit | number =
 
 const fetchTradingViewPrices = async (
   symbols: string[],
-  timeframe: '1m' | '1h' | '4h' | '1D' = '1m'
+  timeframe: '1m' | '1h' | '4h' | '1D' | '5D' | '1M' | '6M' | '1Y' = '1m'
 ): Promise<Record<string, {
   price: number;
   changePercent: number;
@@ -308,18 +332,18 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [activeTab, setActiveTab] = useState('dashboard');
   const [activeAssetId, setActiveAssetId] = useState('btc');
   const [simSpeed, setSimSpeed] = useState(3000); // 3s por defecto
-  const [timeframe, setTimeframe] = useState<'1m' | '1h' | '4h' | '1D'>('1m');
+  const [timeframe, setTimeframe] = useState<'1m' | '1h' | '4h' | '1D' | '5D' | '1M' | '6M' | '1Y'>('1m');
   const [realNews, setRealNews] = useState<NewsEvent[]>([]);
   const [isLoadingRealNews, setIsLoadingRealNews] = useState<boolean>(false);
 
-  const changeTimeframe = (tf: '1m' | '1h' | '4h' | '1D') => {
+  const changeTimeframe = (tf: '1m' | '1h' | '4h' | '1D' | '5D' | '1M' | '6M' | '1Y') => {
     setTimeframe(tf);
   };
 
   const lastPeriodRef = useRef(getCurrentPeriodValue('1m'));
 
   // Estado del Portafolio
-  const [balance, setBalance] = useState(50000); // $50,000 iniciales
+  const [balance, setBalance] = useState(5000); // $5,000 iniciales
   const [holdings, setHoldings] = useState<Record<string, number>>({
     BTC: 0,
     ETH: 0,
@@ -343,13 +367,34 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [isLoading, setIsLoading] = useState(true);
   const [isApiLive, setIsApiLive] = useState(false);
 
-  // Configuración de API Keys para simulación del exchange real
-  const [apiConfig, setApiConfig] = useState({
-    apiKey: '',
-    apiSecret: '',
-    exchange: 'binance_sandbox',
-    isConnected: false,
+  // Configuración de API Keys para simulación del exchange real y Paper Trading
+  const [apiConfig, setApiConfig] = useState<AppApiConfig>(() => {
+    try {
+      const saved = localStorage.getItem('ai_trading_platform_api_config');
+      if (saved) {
+        return JSON.parse(saved);
+      }
+    } catch (e) {
+      console.error("Error reading apiConfig from localStorage", e);
+    }
+    return {
+      apiKey: '',
+      apiSecret: '',
+      exchange: 'binance_sandbox',
+      isConnected: false,
+      binanceApiKey: '',
+      binanceApiSecret: '',
+      binanceConnected: false,
+      alpacaApiKey: '',
+      alpacaApiSecret: '',
+      alpacaConnected: false,
+    };
   });
+
+  // Guardar en localStorage cuando cambie
+  useEffect(() => {
+    localStorage.setItem('ai_trading_platform_api_config', JSON.stringify(apiConfig));
+  }, [apiConfig]);
 
   // Bots de Trading Autónomos
   const [bots, setBots] = useState<BotConfig[]>([
@@ -447,7 +492,7 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const isApiLiveRef = useRef(isApiLive);
   useEffect(() => { isApiLiveRef.current = isApiLive; }, [isApiLive]);
 
-  const loadMarketData = async (tf: '1m' | '1h' | '4h' | '1D' = '1m') => {
+  const loadMarketData = async (tf: '1m' | '1h' | '4h' | '1D' | '5D' | '1M' | '6M' | '1Y' = '1m') => {
     setIsLoading(true);
     
     // Configurar parámetros de intervalos y rangos
@@ -474,6 +519,28 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       cryptoInterval = '1d';
       stockInterval = '1d';
       stockRange = '1y';
+    } else if (tf === '5D') {
+      cryptoInterval = '1d';
+      cryptoLimit = 500;
+      stockInterval = '1d';
+      stockRange = '1y';
+      groupSize = 5;
+    } else if (tf === '1M') {
+      cryptoInterval = '1M';
+      stockInterval = '1mo';
+      stockRange = '5y';
+    } else if (tf === '6M') {
+      cryptoInterval = '1M';
+      cryptoLimit = 500;
+      stockInterval = '1mo';
+      stockRange = 'max';
+      groupSize = 6;
+    } else if (tf === '1Y') {
+      cryptoInterval = '1M';
+      cryptoLimit = 500;
+      stockInterval = '1mo';
+      stockRange = 'max';
+      groupSize = 12;
     }
 
     // Inicializar primero con simulación local como respaldo rápido
@@ -530,14 +597,24 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
     } catch (e) {
       console.warn('Failed fetching initial crypto tickers from Binance:', e);
     }
-
     try {
       const cryptoPromises = cryptoSymbols.map(async (symbol) => {
         try {
           const res = await fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}USDT&interval=${cryptoInterval}&limit=${cryptoLimit}`);
           if (!res.ok) throw new Error(`Error API Binance para ${symbol}`);
           const data = await res.json();
-          const priceHistory = data.map((kline: any) => Number(kline[4]));
+          let rawHistory = data.map((kline: any) => Number(kline[4]));
+          if (groupSize > 1) {
+            const aggregated: number[] = [];
+            for (let i = 0; i < rawHistory.length; i += groupSize) {
+              const chunk = rawHistory.slice(i, i + groupSize);
+              if (chunk.length > 0) {
+                aggregated.push(chunk[chunk.length - 1]);
+              }
+            }
+            rawHistory = aggregated;
+          }
+          const priceHistory = rawHistory.slice(-100).map((p: number) => Number(p.toFixed(2)));
           return { symbol, priceHistory };
         } catch (e) {
           console.warn(`Error individual al cargar crypto ${symbol} de Binance:`, e);
@@ -660,6 +737,14 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
                 tfVol = 0.009;
               } else if (timeframeStr === '1D') {
                 tfVol = 0.022;
+              } else if (timeframeStr === '5D') {
+                tfVol = 0.05;
+              } else if (timeframeStr === '1M') {
+                tfVol = 0.12;
+              } else if (timeframeStr === '6M') {
+                tfVol = 0.25;
+              } else if (timeframeStr === '1Y') {
+                tfVol = 0.40;
               }
               const baseVol = INITIAL_ASSETS_DATA.find((d: any) => d.symbol === asset.symbol)?.volatility || 0.012;
               const finalVol = baseVol * tfVol * 10;
@@ -865,7 +950,7 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       const timeStr = t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
       history.push({
         timestamp: timeStr,
-        totalValue: 50000,
+        totalValue: 5000,
       });
     }
     setPortfolioValueHistory(history);
@@ -943,7 +1028,7 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
   };
 
   // Función interna para procesar transacciones de bots y manuales
-  const executeTrade = (
+  const executeTrade = async (
     botName: string,
     assetSymbol: string,
     type: 'BUY' | 'SELL',
@@ -952,7 +1037,97 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
   ) => {
     const currentBalance = balanceRef.current;
     const currentHoldings = holdingsRef.current;
+    const isCrypto = ['BTC', 'ETH', 'SOL', 'XRP', 'XLM', 'HBAR'].includes(assetSymbol.toUpperCase());
 
+    // --- CASO 1: Binance Testnet (Cripto Conectado) ---
+    if (isCrypto && apiConfig.binanceConnected && apiConfig.binanceApiKey && apiConfig.binanceApiSecret) {
+      try {
+        addLog(`[${botName}] Enviando orden a Binance Testnet: ${type} ${assetSymbol}...`, 'info');
+        const currentQty = currentHoldings[assetSymbol] || 0;
+        const res = await executeBinanceOrder(
+          assetSymbol,
+          type,
+          amountUsd,
+          price,
+          currentQty,
+          apiConfig.binanceApiKey,
+          apiConfig.binanceApiSecret
+        );
+        
+        const now = new Date();
+        const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        
+        const execQty = res.executedQty ? Number(res.executedQty) : (amountUsd / price);
+        const execPrice = res.cummulativeQuoteQty && res.executedQty && Number(res.executedQty) > 0
+          ? (Number(res.cummulativeQuoteQty) / Number(res.executedQty))
+          : price;
+        const totalPaid = res.cummulativeQuoteQty ? Number(res.cummulativeQuoteQty) : amountUsd;
+        
+        const newTransaction: Transaction = {
+          id: res.orderId ? String(res.orderId) : Math.random().toString(36).substring(2, 9),
+          timestamp: timeStr,
+          botName,
+          assetSymbol,
+          type,
+          price: Number(execPrice.toFixed(2)),
+          amount: Number(execQty.toFixed(6)),
+          totalUsd: Number(totalPaid.toFixed(2)),
+        };
+
+        setTransactions(prev => [newTransaction, ...prev]);
+        addLog(
+          `[${botName}] Orden de ${type} EJECUTADA en Binance: ${execQty.toFixed(4)} ${assetSymbol} a $${execPrice.toLocaleString()} USD (Total: $${totalPaid.toFixed(2)} USD)`,
+          botName === 'Usuario' ? 'info' : (type === 'BUY' ? 'buy' : 'sell')
+        );
+        return true;
+      } catch (err: any) {
+        addLog(`[${botName}] Error al ejecutar orden en Binance: ${err.message || err}`, 'warning');
+        return false;
+      }
+    }
+
+    // --- CASO 2: Alpaca Paper Trading (Acciones Conectado) ---
+    if (!isCrypto && apiConfig.alpacaConnected && apiConfig.alpacaApiKey && apiConfig.alpacaApiSecret) {
+      try {
+        addLog(`[${botName}] Enviando orden a Alpaca Paper Trading: ${type} ${assetSymbol}...`, 'info');
+        const currentQty = currentHoldings[assetSymbol] || 0;
+        const res = await executeAlpacaOrder(
+          assetSymbol,
+          type,
+          amountUsd,
+          price,
+          currentQty,
+          apiConfig.alpacaApiKey,
+          apiConfig.alpacaApiSecret
+        );
+
+        const now = new Date();
+        const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+        const newTransaction: Transaction = {
+          id: res.id ? String(res.id) : Math.random().toString(36).substring(2, 9),
+          timestamp: timeStr,
+          botName,
+          assetSymbol,
+          type,
+          price,
+          amount: res.qty ? Number(res.qty) : (amountUsd / price),
+          totalUsd: res.notional ? Number(res.notional) : amountUsd,
+        };
+
+        setTransactions(prev => [newTransaction, ...prev]);
+        addLog(
+          `[${botName}] Orden de ${type} ENVIADA a Alpaca: ${assetSymbol} (ID Cliente: ${res.client_order_id || res.id})`,
+          botName === 'Usuario' ? 'info' : (type === 'BUY' ? 'buy' : 'sell')
+        );
+        return true;
+      } catch (err: any) {
+        addLog(`[${botName}] Error al ejecutar orden en Alpaca: ${err.message || err}`, 'warning');
+        return false;
+      }
+    }
+
+    // --- CASO 3: Simulación Local (Offline / Sin Conectar) ---
     if (type === 'BUY') {
       if (currentBalance < amountUsd) {
         if (botName === 'Usuario') {
@@ -965,7 +1140,6 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       
       const amount = Number((amountUsd / price).toFixed(6));
       
-      // Actualizar estado de balance y tenencias
       setBalance(prev => Number((prev - amountUsd).toFixed(2)));
       setHoldings(prev => ({
         ...prev,
@@ -1003,10 +1177,8 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
         return false;
       }
 
-      // Si es bot, vende la proporción correspondiente a su tradeSize, o el total si es manual/excede tenencias
       let amountToSell = availableAmount;
       if (botName !== 'Usuario') {
-        // Los bots venden el equivalente a su tradeSize en valor del activo, o todo lo que tengan
         const proposedAmount = amountUsd / price;
         amountToSell = Math.min(availableAmount, proposedAmount);
       }
@@ -1062,8 +1234,8 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
         addLog(`NOTICIA: ${newNewsEvent.headline} (Impacto: ${newNewsEvent.impact.toUpperCase()})`, 'market');
       }
 
-      // 2. Avanzar el precio del mercado con el impacto de noticias
-      let nextAssets = tickAssets(currentAssets, updatedNewsList);
+      // 2. Mantener los precios base sin aplicar fluctuaciones simuladas
+      let nextAssets = currentAssets.map(asset => ({ ...asset }));
 
       // Comprobar cambio de periodo para el timeframe actual
       const currentPeriodVal = getCurrentPeriodValue(timeframe);
@@ -1137,17 +1309,13 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
         let newApiChangePercent = 0;
 
         if (tvData) {
-          if (tvData.price !== asset.realBasePrice) {
-            hasNewApiPrice = true;
-            newApiPrice = tvData.price;
-            newApiChangePercent = tvData.changePercent;
-          }
+          hasNewApiPrice = true;
+          newApiPrice = tvData.price;
+          newApiChangePercent = tvData.changePercent;
         } else if (liveCrypto) {
-          if (liveCrypto.price !== asset.realBasePrice) {
-            hasNewApiPrice = true;
-            newApiPrice = liveCrypto.price;
-            newApiChangePercent = liveCrypto.changePercent;
-          }
+          hasNewApiPrice = true;
+          newApiPrice = liveCrypto.price;
+          newApiChangePercent = liveCrypto.changePercent;
         }
 
         if (hasNewApiPrice) {
@@ -1589,6 +1757,93 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       return asset;
     }));
   };
+
+  // Sincronización periódica de balances reales de las cuentas demo
+  useEffect(() => {
+    if (!apiConfig.binanceConnected && !apiConfig.alpacaConnected) return;
+
+    const syncRealBalances = async () => {
+      try {
+        let updatedBalance = balanceRef.current;
+        let updatedHoldings = { ...holdingsRef.current };
+        let didChange = false;
+        let binanceUsdt = 0;
+        let alpacaCash = 0;
+
+        // 1. Sincronizar Binance Testnet (Criptomonedas)
+        if (apiConfig.binanceConnected && apiConfig.binanceApiKey && apiConfig.binanceApiSecret) {
+          try {
+            const binanceData = await fetchBinanceAccount(
+              apiConfig.binanceApiKey,
+              apiConfig.binanceApiSecret
+            );
+            binanceUsdt = binanceData.balanceUsdt;
+            
+            const cryptoSymbols = ['BTC', 'ETH', 'SOL', 'XRP', 'XLM', 'HBAR'];
+            cryptoSymbols.forEach(sym => {
+              updatedHoldings[sym] = binanceData.holdings[sym] || 0;
+            });
+            didChange = true;
+          } catch (e) {
+            console.error("Error sincronizando Binance Testnet account info:", e);
+          }
+        }
+
+        // 2. Sincronizar Alpaca (Acciones)
+        if (apiConfig.alpacaConnected && apiConfig.alpacaApiKey && apiConfig.alpacaApiSecret) {
+          try {
+            const alpacaAcct = await fetchAlpacaAccount(
+              apiConfig.alpacaApiKey,
+              apiConfig.alpacaApiSecret
+            );
+            alpacaCash = alpacaAcct.cash;
+            
+            const alpacaPositions = await fetchAlpacaPositions(
+              apiConfig.alpacaApiKey,
+              apiConfig.alpacaApiSecret
+            );
+            
+            const stockSymbols = ['AAPL', 'TSLA', 'NVDA', 'TTWO', 'ENR1'];
+            stockSymbols.forEach(sym => {
+              const cleanSym = sym === 'ENR1' ? 'ENR' : sym;
+              updatedHoldings[sym] = alpacaPositions[cleanSym] || 0;
+            });
+            didChange = true;
+          } catch (e) {
+            console.error("Error sincronizando Alpaca Paper Trading account info:", e);
+          }
+        }
+
+        // Calcular saldo en efectivo total disponible
+        if (apiConfig.binanceConnected && apiConfig.alpacaConnected) {
+          updatedBalance = binanceUsdt + alpacaCash;
+        } else if (apiConfig.binanceConnected) {
+          updatedBalance = binanceUsdt;
+        } else if (apiConfig.alpacaConnected) {
+          updatedBalance = alpacaCash;
+        }
+
+        if (didChange) {
+          setBalance(updatedBalance);
+          setHoldings(updatedHoldings);
+        }
+      } catch (err) {
+        console.error("Error general en el polleo de balances reales:", err);
+      }
+    };
+
+    // Pollear balances reales cada 5 segundos
+    syncRealBalances();
+    const intervalId = setInterval(syncRealBalances, 5000);
+    return () => clearInterval(intervalId);
+  }, [
+    apiConfig.binanceConnected,
+    apiConfig.binanceApiKey,
+    apiConfig.binanceApiSecret,
+    apiConfig.alpacaConnected,
+    apiConfig.alpacaApiKey,
+    apiConfig.alpacaApiSecret
+  ]);
 
   return (
     <TradingContext.Provider

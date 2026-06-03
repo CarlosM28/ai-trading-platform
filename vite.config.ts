@@ -15,6 +15,16 @@ export default defineConfig({
         target: 'https://scanner.tradingview.com',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api-tradingview/, '')
+      },
+      '/api-binance-testnet': {
+        target: 'https://testnet.binance.vision',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api-binance-testnet/, '')
+      },
+      '/api-alpaca-paper': {
+        target: 'https://paper-api.alpaca.markets',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api-alpaca-paper/, '')
       }
     }
   }

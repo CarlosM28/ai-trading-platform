@@ -28,6 +28,9 @@ export const MarketChart: React.FC = () => {
     if (timeframe === '1m') return '1';
     if (timeframe === '1h') return '60';
     if (timeframe === '4h') return '240';
+    if (timeframe === '5D' || timeframe === '1D') return 'D';
+    if (timeframe === '1M' || timeframe === '6M') return 'W';
+    if (timeframe === '1Y') return 'M';
     return 'D';
   }, [timeframe]);
 

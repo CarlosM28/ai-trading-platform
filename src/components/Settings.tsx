@@ -17,10 +17,15 @@ export const Settings: React.FC = () => {
   } = useTrading();
 
   // Estados locales para la edición
-  const [initialBalanceInput, setInitialBalanceInput] = useState<number>(50000);
-  const [apiKeyInput, setApiKeyInput] = useState<string>(apiConfig.apiKey);
-  const [apiSecretInput, setApiSecretInput] = useState<string>(apiConfig.apiSecret);
-  const [exchangeInput, setExchangeInput] = useState<string>(apiConfig.exchange);
+  const [initialBalanceInput, setInitialBalanceInput] = useState<number>(5000);
+  
+  // Estados locales para Binance Testnet
+  const [binanceKey, setBinanceKey] = useState<string>(apiConfig.binanceApiKey || '');
+  const [binanceSecret, setBinanceSecret] = useState<string>(apiConfig.binanceApiSecret || '');
+
+  // Estados locales para Alpaca Paper Trading
+  const [alpacaKey, setAlpacaKey] = useState<string>(apiConfig.alpacaApiKey || '');
+  const [alpacaSecret, setAlpacaSecret] = useState<string>(apiConfig.alpacaApiSecret || '');
 
   const handleReset = () => {
     if (window.confirm(`¿Estás seguro de restablecer el portafolio? Esto eliminará todas las tenencias actuales y fijará el saldo en $${initialBalanceInput.toLocaleString()} USD.`)) {
@@ -28,30 +33,86 @@ export const Settings: React.FC = () => {
     }
   };
 
-  const handleConnectApi = (e: React.FormEvent) => {
+  const handleConnectBinance = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!apiKeyInput || !apiSecretInput) {
-      alert('Por favor ingresa tanto la API Key como el API Secret para establecer la conexión simulada.');
+    if (!binanceKey || !binanceSecret) {
+      alert('Por favor ingresa tanto la API Key como el API Secret de Binance Testnet.');
       return;
     }
 
-    setApiConfig({
-      apiKey: apiKeyInput,
-      apiSecret: apiSecretInput,
-      exchange: exchangeInput,
-      isConnected: true,
+    setApiConfig(prev => {
+      const isConnected = true;
+      return {
+        ...prev,
+        binanceApiKey: binanceKey,
+        binanceApiSecret: binanceSecret,
+        binanceConnected: true,
+        isConnected,
+        // Compatibilidad legacy
+        apiKey: binanceKey,
+        apiSecret: binanceSecret,
+        exchange: 'binance_sandbox'
+      };
     });
   };
 
-  const handleDisconnectApi = () => {
-    setApiConfig({
-      apiKey: '',
-      apiSecret: '',
-      exchange: 'binance_sandbox',
-      isConnected: false,
+  const handleDisconnectBinance = () => {
+    setApiConfig(prev => {
+      const nextConnected = prev.alpacaConnected;
+      return {
+        ...prev,
+        binanceApiKey: '',
+        binanceApiSecret: '',
+        binanceConnected: false,
+        isConnected: nextConnected,
+        apiKey: nextConnected ? prev.alpacaApiKey : '',
+        apiSecret: nextConnected ? prev.alpacaApiSecret : '',
+        exchange: nextConnected ? 'alpaca_paper' : 'binance_sandbox'
+      };
     });
-    setApiKeyInput('');
-    setApiSecretInput('');
+    setBinanceKey('');
+    setBinanceSecret('');
+  };
+
+  const handleConnectAlpaca = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!alpacaKey || !alpacaSecret) {
+      alert('Por favor ingresa tanto la API Key como el API Secret de Alpaca Paper Trading.');
+      return;
+    }
+
+    setApiConfig(prev => {
+      const isConnected = true;
+      return {
+        ...prev,
+        alpacaApiKey: alpacaKey,
+        alpacaApiSecret: alpacaSecret,
+        alpacaConnected: true,
+        isConnected,
+        // Compatibilidad legacy
+        apiKey: alpacaKey,
+        apiSecret: alpacaSecret,
+        exchange: 'alpaca_paper'
+      };
+    });
+  };
+
+  const handleDisconnectAlpaca = () => {
+    setApiConfig(prev => {
+      const nextConnected = prev.binanceConnected;
+      return {
+        ...prev,
+        alpacaApiKey: '',
+        alpacaApiSecret: '',
+        alpacaConnected: false,
+        isConnected: nextConnected,
+        apiKey: nextConnected ? prev.binanceApiKey : '',
+        apiSecret: nextConnected ? prev.binanceApiSecret : '',
+        exchange: nextConnected ? 'binance_sandbox' : 'alpaca_paper'
+      };
+    });
+    setAlpacaKey('');
+    setAlpacaSecret('');
   };
 
   return (
@@ -183,154 +244,226 @@ export const Settings: React.FC = () => {
 
         </div>
 
-        {/* Col 2: Simulated Real API Keys Setup */}
-        <div className="glass-card" style={{ padding: '24px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
-            <Key size={18} color="var(--accent-secondary)" />
-            <h3 style={{ fontSize: '1.1rem', fontWeight: 700 }}>Conexión API (Exchange / Broker)</h3>
-          </div>
+        {/* Col 2: Real API Keys Setup */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
           
-          <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '16px', lineHeight: '1.4' }}>
-            Enlaza el motor de bots de forma directa con tu broker favorito. Tus llaves locales se validan para simular la ejecución en tiempo real directamente sobre el libro de órdenes del exchange.
-          </p>
-
-          {apiConfig.isConnected ? (
-            /* Conectado */
-            <div style={{
-              background: 'rgba(0, 255, 170, 0.04)',
-              border: '1px solid rgba(0, 255, 170, 0.15)',
-              borderRadius: '12px',
-              padding: '20px',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '16px'
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <CheckCircle2 size={24} color="var(--color-buy)" />
-                <div>
-                  <h4 style={{ fontSize: '0.95rem', fontWeight: 700, color: 'var(--text-main)' }}>Conexión Exitosa</h4>
-                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Operando en el Sandbox de {apiConfig.exchange.toUpperCase()}</span>
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '0.8rem' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ color: 'var(--text-muted)' }}>API Key:</span>
-                  <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>{apiConfig.apiKey.substring(0, 8)}...****</span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                  <span style={{ color: 'var(--text-muted)' }}>Servidor:</span>
-                  <span style={{ fontWeight: 600, color: 'var(--accent-secondary)' }}>PROD_SANDBOX_V2</span>
-                </div>
-              </div>
-
-              <button
-                onClick={handleDisconnectApi}
-                style={{
-                  background: 'transparent',
-                  border: '1px solid rgba(255, 70, 104, 0.3)',
-                  color: 'var(--color-sell)',
-                  borderRadius: '8px',
-                  padding: '8px 0',
-                  fontSize: '0.8rem',
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                  transition: 'all 0.2s ease'
-                }}
-              >
-                DESCONECTAR API
-              </button>
+          {/* Card 1: Binance Testnet */}
+          <div className="glass-card" style={{ padding: '24px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
+              <Key size={18} color="var(--accent-secondary)" />
+              <h3 style={{ fontSize: '1.1rem', fontWeight: 700 }}>Binance Testnet (Criptomonedas)</h3>
             </div>
-          ) : (
-            /* Desconectado / Formulario */
-            <form onSubmit={handleConnectApi} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-              
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Seleccionar Proveedor / Exchange</label>
-                <select
-                  value={exchangeInput}
-                  onChange={(e) => setExchangeInput(e.target.value)}
+            
+            <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '16px', lineHeight: '1.4' }}>
+              Conecta los bots a la cuenta de pruebas oficial de Binance (Spot Sandbox) para operar cryptos reales en demo.
+            </p>
+
+            {apiConfig.binanceConnected ? (
+              <div style={{
+                background: 'rgba(0, 255, 170, 0.04)',
+                border: '1px solid rgba(0, 255, 170, 0.15)',
+                borderRadius: '12px',
+                padding: '16px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '12px'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <CheckCircle2 size={20} color="var(--color-buy)" />
+                  <div>
+                    <h4 style={{ fontSize: '0.9rem', fontWeight: 700, color: 'var(--text-main)' }}>Binance Conectado</h4>
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Operando en Binance Testnet</span>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem' }}>
+                  <span style={{ color: 'var(--text-muted)' }}>API Key:</span>
+                  <span style={{ fontFamily: 'monospace' }}>{apiConfig.binanceApiKey ? apiConfig.binanceApiKey.substring(0, 8) + '...****' : ''}</span>
+                </div>
+                <button
+                  onClick={handleDisconnectBinance}
                   style={{
-                    width: '100%',
-                    background: 'rgba(0,0,0,0.3)',
-                    border: '1px solid var(--border-color)',
+                    background: 'transparent',
+                    border: '1px solid rgba(255, 70, 104, 0.3)',
+                    color: 'var(--color-sell)',
                     borderRadius: '8px',
-                    padding: '8px 12px',
-                    color: 'var(--text-main)',
+                    padding: '8px 0',
+                    fontSize: '0.8rem',
                     fontWeight: 600,
-                    outline: 'none',
-                    cursor: 'pointer'
+                    cursor: 'pointer',
+                    transition: 'all 0.2s ease'
                   }}
                 >
-                  <option value="binance_sandbox">Binance Sandbox (Crypto)</option>
-                  <option value="alpaca_paper">Alpaca Paper Trading (Stocks)</option>
-                  <option value="coinbase_sandbox">Coinbase Advanced Sandbox (Crypto)</option>
-                </select>
+                  DESCONECTAR BINANCE
+                </button>
               </div>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>API Key</label>
-                <input
-                  type="text"
-                  placeholder="ej. xh98a12bc90da8b..."
-                  value={apiKeyInput}
-                  onChange={(e) => setApiKeyInput(e.target.value)}
+            ) : (
+              <form onSubmit={handleConnectBinance} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Binance Testnet API Key</label>
+                  <input
+                    type="text"
+                    placeholder="ej. xh98a12bc90da8b..."
+                    value={binanceKey}
+                    onChange={(e) => setBinanceKey(e.target.value)}
+                    style={{
+                      width: '100%',
+                      background: 'rgba(0,0,0,0.3)',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '8px',
+                      padding: '8px 12px',
+                      color: 'var(--text-main)',
+                      fontSize: '0.85rem',
+                      outline: 'none',
+                    }}
+                  />
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Binance Testnet Secret Key</label>
+                  <input
+                    type="password"
+                    placeholder="••••••••••••••••••••••••"
+                    value={binanceSecret}
+                    onChange={(e) => setBinanceSecret(e.target.value)}
+                    style={{
+                      width: '100%',
+                      background: 'rgba(0,0,0,0.3)',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '8px',
+                      padding: '8px 12px',
+                      color: 'var(--text-main)',
+                      fontSize: '0.85rem',
+                      outline: 'none',
+                    }}
+                  />
+                </div>
+                <button
+                  type="submit"
                   style={{
-                    width: '100%',
-                    background: 'rgba(0,0,0,0.3)',
-                    border: '1px solid var(--border-color)',
+                    background: 'var(--accent-primary)',
+                    color: 'white',
+                    border: 'none',
                     borderRadius: '8px',
-                    padding: '8px 12px',
-                    color: 'var(--text-main)',
-                    fontWeight: 500,
-                    outline: 'none',
+                    padding: '10px 0',
+                    fontWeight: 700,
+                    fontSize: '0.85rem',
+                    cursor: 'pointer',
+                    boxShadow: '0 0 15px rgba(95, 93, 236, 0.15)'
                   }}
-                />
-              </div>
+                >
+                  CONECTAR BINANCE TESTNET
+                </button>
+              </form>
+            )}
+          </div>
 
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>API Secret (Firma HMAC)</label>
-                <input
-                  type="password"
-                  placeholder="••••••••••••••••••••••••"
-                  value={apiSecretInput}
-                  onChange={(e) => setApiSecretInput(e.target.value)}
+          {/* Card 2: Alpaca Paper Trading */}
+          <div className="glass-card" style={{ padding: '24px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
+              <Key size={18} color="var(--accent-secondary)" />
+              <h3 style={{ fontSize: '1.1rem', fontWeight: 700 }}>Alpaca Paper Trading (Acciones)</h3>
+            </div>
+            
+            <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '16px', lineHeight: '1.4' }}>
+              Conecta los bots a la cuenta demo de Alpaca Markets para operar acciones de EE.UU. con datos reales.
+            </p>
+
+            {apiConfig.alpacaConnected ? (
+              <div style={{
+                background: 'rgba(0, 255, 170, 0.04)',
+                border: '1px solid rgba(0, 255, 170, 0.15)',
+                borderRadius: '12px',
+                padding: '16px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '12px'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <CheckCircle2 size={20} color="var(--color-buy)" />
+                  <div>
+                    <h4 style={{ fontSize: '0.9rem', fontWeight: 700, color: 'var(--text-main)' }}>Alpaca Conectado</h4>
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Operando en Alpaca Paper Trading</span>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem' }}>
+                  <span style={{ color: 'var(--text-muted)' }}>API Key ID:</span>
+                  <span style={{ fontFamily: 'monospace' }}>{apiConfig.alpacaApiKey ? apiConfig.alpacaApiKey.substring(0, 8) + '...****' : ''}</span>
+                </div>
+                <button
+                  onClick={handleDisconnectAlpaca}
                   style={{
-                    width: '100%',
-                    background: 'rgba(0,0,0,0.3)',
-                    border: '1px solid var(--border-color)',
+                    background: 'transparent',
+                    border: '1px solid rgba(255, 70, 104, 0.3)',
+                    color: 'var(--color-sell)',
                     borderRadius: '8px',
-                    padding: '8px 12px',
-                    color: 'var(--text-main)',
-                    fontWeight: 500,
-                    outline: 'none',
+                    padding: '8px 0',
+                    fontSize: '0.8rem',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    transition: 'all 0.2s ease'
                   }}
-                />
+                >
+                  DESCONECTAR ALPACA
+                </button>
               </div>
-
-              <button
-                type="submit"
-                style={{
-                  background: 'var(--accent-primary)',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: '10px',
-                  padding: '12px 0',
-                  fontWeight: 700,
-                  fontSize: '0.9rem',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: '8px',
-                  boxShadow: '0 0 15px rgba(95, 93, 236, 0.2)',
-                  marginTop: '4px'
-                }}
-              >
-                CONECTAR SANDBOX
-              </button>
-            </form>
-          )}
+            ) : (
+              <form onSubmit={handleConnectAlpaca} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Alpaca API Key ID</label>
+                  <input
+                    type="text"
+                    placeholder="ej. PK...XXXX"
+                    value={alpacaKey}
+                    onChange={(e) => setAlpacaKey(e.target.value)}
+                    style={{
+                      width: '100%',
+                      background: 'rgba(0,0,0,0.3)',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '8px',
+                      padding: '8px 12px',
+                      color: 'var(--text-main)',
+                      fontSize: '0.85rem',
+                      outline: 'none',
+                    }}
+                  />
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Alpaca Secret Key</label>
+                  <input
+                    type="password"
+                    placeholder="••••••••••••••••••••••••"
+                    value={alpacaSecret}
+                    onChange={(e) => setAlpacaSecret(e.target.value)}
+                    style={{
+                      width: '100%',
+                      background: 'rgba(0,0,0,0.3)',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '8px',
+                      padding: '8px 12px',
+                      color: 'var(--text-main)',
+                      fontSize: '0.85rem',
+                      outline: 'none',
+                    }}
+                  />
+                </div>
+                <button
+                  type="submit"
+                  style={{
+                    background: 'var(--accent-primary)',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '8px',
+                    padding: '10px 0',
+                    fontWeight: 700,
+                    fontSize: '0.85rem',
+                    cursor: 'pointer',
+                    boxShadow: '0 0 15px rgba(95, 93, 236, 0.15)'
+                  }}
+                >
+                  CONECTAR ALPACA PAPER
+                </button>
+              </form>
+            )}
+          </div>
 
         </div>
 

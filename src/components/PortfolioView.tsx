@@ -2,7 +2,8 @@ import React, { useMemo } from 'react';
 import { useTrading } from '../context/TradingContext';
 import { 
   Layers,
-  History
+  History,
+  TrendingUp
 } from 'lucide-react';
 
 export const PortfolioView: React.FC = () => {
@@ -36,6 +37,68 @@ export const PortfolioView: React.FC = () => {
       holdingsBreakdown: breakdownWithPct
     };
   }, [assets, balance, holdings]);
+
+  // Calcular operaciones realizadas (ganancia/pérdida realizada)
+  const realizedTrades = useMemo(() => {
+    const positionCost: Record<string, { qty: number; totalCost: number }> = {};
+    const trades: Array<{
+      id: string;
+      timestamp: string;
+      assetSymbol: string;
+      botName: string;
+      amount: number;
+      avgBuyPrice: number;
+      sellPrice: number;
+      totalCost: number;
+      totalReturn: number;
+      realizedPnl: number;
+      pnlPercent: number;
+    }> = [];
+
+    // Las transacciones se procesan cronológicamente (al revés del orden del array)
+    const chronologicalTx = [...transactions].reverse();
+
+    chronologicalTx.forEach(tx => {
+      const sym = tx.assetSymbol;
+      if (!positionCost[sym]) {
+        positionCost[sym] = { qty: 0, totalCost: 0 };
+      }
+
+      const pos = positionCost[sym];
+
+      if (tx.type === 'BUY') {
+        pos.qty += tx.amount;
+        pos.totalCost += tx.totalUsd;
+      } else {
+        // SELL
+        if (pos.qty > 0) {
+          const avgBuy = pos.totalCost / pos.qty;
+          const soldCost = tx.amount * avgBuy;
+          const pnl = tx.totalUsd - soldCost;
+          const pnlPct = avgBuy > 0 ? ((tx.price - avgBuy) / avgBuy) * 100 : 0;
+
+          trades.push({
+            id: tx.id,
+            timestamp: tx.timestamp,
+            assetSymbol: sym,
+            botName: tx.botName,
+            amount: tx.amount,
+            avgBuyPrice: avgBuy,
+            sellPrice: tx.price,
+            totalCost: soldCost,
+            totalReturn: tx.totalUsd,
+            realizedPnl: pnl,
+            pnlPercent: pnlPct
+          });
+
+          pos.qty = Math.max(0, pos.qty - tx.amount);
+          pos.totalCost = Math.max(0, pos.totalCost - soldCost);
+        }
+      }
+    });
+
+    return trades.reverse(); // Mostrar la más reciente primero
+  }, [transactions]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
@@ -202,6 +265,81 @@ export const PortfolioView: React.FC = () => {
           </div>
         </div>
 
+      </div>
+
+      {/* Registro de Ganancias y Pérdidas Realizadas */}
+      <div className="glass-card" style={{ padding: '24px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '20px' }}>
+          <TrendingUp size={18} color="var(--color-buy)" />
+          <h3 style={{ fontSize: '1.1rem', fontWeight: 700 }}>Registro de Ganancias y Pérdidas Realizadas</h3>
+        </div>
+
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{
+            width: '100%',
+            borderCollapse: 'collapse',
+            fontSize: '0.85rem',
+            textAlign: 'left'
+          }}>
+            <thead>
+              <tr style={{ borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                <th style={{ padding: '12px 8px', color: 'var(--text-muted)', fontWeight: 600 }}>Hora</th>
+                <th style={{ padding: '12px 8px', color: 'var(--text-muted)', fontWeight: 600 }}>Activo</th>
+                <th style={{ padding: '12px 8px', color: 'var(--text-muted)', fontWeight: 600 }}>Bot Ejecutor</th>
+                <th style={{ padding: '12px 8px', color: 'var(--text-muted)', fontWeight: 600 }}>Cant. Vendida</th>
+                <th style={{ padding: '12px 8px', color: 'var(--text-muted)', fontWeight: 600 }}>Precio Compra Prom.</th>
+                <th style={{ padding: '12px 8px', color: 'var(--text-muted)', fontWeight: 600 }}>Precio Venta</th>
+                <th style={{ padding: '12px 8px', color: 'var(--text-muted)', fontWeight: 600 }}>Costo de Compra</th>
+                <th style={{ padding: '12px 8px', color: 'var(--text-muted)', fontWeight: 600 }}>Valor de Venta</th>
+                <th style={{ padding: '12px 8px', color: 'var(--text-muted)', fontWeight: 600 }}>Ganancia / Pérdida</th>
+              </tr>
+            </thead>
+            <tbody>
+              {realizedTrades.length === 0 ? (
+                <tr>
+                  <td colSpan={9} style={{ padding: '40px 10px', textAlign: 'center', color: 'var(--text-muted)' }}>
+                    No hay ganancias o pérdidas realizadas todavía. Realiza ventas o espera que los bots cierren posiciones.
+                  </td>
+                </tr>
+              ) : (
+                realizedTrades.map((trade) => {
+                  const isProfit = trade.realizedPnl >= 0;
+                  return (
+                    <tr 
+                      key={trade.id} 
+                      style={{ 
+                        borderBottom: '1px solid rgba(255,255,255,0.03)',
+                        transition: 'background 0.2s',
+                      }}
+                      onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255,255,255,0.01)'; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                    >
+                      <td style={{ padding: '12px 8px', color: 'var(--text-muted)' }}>{trade.timestamp}</td>
+                      <td style={{ padding: '12px 8px', color: 'var(--accent-secondary)', fontWeight: 600 }}>{trade.assetSymbol}</td>
+                      <td style={{ padding: '12px 8px', fontWeight: 600 }}>{trade.botName}</td>
+                      <td style={{ padding: '12px 8px' }}>{trade.amount.toFixed(4)}</td>
+                      <td style={{ padding: '12px 8px' }}>${trade.avgBuyPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                      <td style={{ padding: '12px 8px' }}>${trade.sellPrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                      <td style={{ padding: '12px 8px', color: 'var(--text-muted)' }}>
+                        ${trade.totalCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      <td style={{ padding: '12px 8px', color: 'var(--text-muted)' }}>
+                        ${trade.totalReturn.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      <td style={{ 
+                        padding: '12px 8px', 
+                        fontWeight: 700, 
+                        color: isProfit ? 'var(--color-buy)' : 'var(--color-sell)' 
+                      }}>
+                        {isProfit ? '+' : ''}${trade.realizedPnl.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ({isProfit ? '+' : ''}{trade.pnlPercent.toFixed(2)}%)
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
 
     </div>

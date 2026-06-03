@@ -45,7 +45,7 @@ export const Dashboard: React.FC = () => {
     }, 0);
     
     const total = Number((balance + valueOfHoldings).toFixed(2));
-    const startingCapital = 50000;
+    const startingCapital = 5000;
     const net = total - startingCapital;
     const pct = (net / startingCapital) * 100;
 
@@ -202,7 +202,7 @@ export const Dashboard: React.FC = () => {
           }}>
             <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 600 }}>Periodo:</span>
             <div style={{ display: 'flex', gap: '4px', background: 'rgba(0,0,0,0.2)', padding: '2px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.03)' }}>
-              {(['1m', '1h', '4h', '1D'] as const).map((tf) => (
+              {(['1m', '1h', '4h', '1D', '5D', '1M', '6M', '1Y'] as const).map((tf) => (
                 <button
                   key={tf}
                   onClick={() => changeTimeframe(tf)}
