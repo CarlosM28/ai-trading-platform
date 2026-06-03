@@ -283,6 +283,7 @@ export const MarketChart: React.FC = () => {
       {chartType === 'tv' ? (
         <div style={{ width: '100%', height: '400px', position: 'relative' }}>
           <iframe
+            key={`${tvSymbol}-${timeframe}`}
             src={`https://s.tradingview.com/widgetembed/?symbol=${tvSymbol}&interval=${tvInterval}&theme=dark&style=1&timezone=exchange`}
             width="100%"
             height="100%"

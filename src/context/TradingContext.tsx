@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
-import { type Asset, type NewsEvent, generateInitialAssets, tickAssets, generateRandomNews, isStockMarketClosed, INITIAL_ASSETS_DATA } from '../utils/marketSimulator';
+import { type Asset, type NewsEvent, generateInitialAssets, tickAssets, generateRandomNews, INITIAL_ASSETS_DATA } from '../utils/marketSimulator';
 import { calculateRSI, calculateMACD, calculateSMA, calculateSupportResistance } from '../utils/indicators';
 import { externalAssetsPool } from '../utils/externalAssets';
 
@@ -357,7 +357,7 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       id: 'bot_rsi',
       name: 'RSI Rocío',
       strategyType: 'rsi',
-      isActive: true,
+      isActive: false,
       tradeSizeUsd: 1500,
       description: 'Opera basándose en zonas de sobreventa y sobrecompra del mercado.',
       params: {
@@ -402,7 +402,7 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       id: 'bot_fundamental',
       name: 'Fundación F.',
       strategyType: 'fundamental',
-      isActive: true,
+      isActive: false,
       tradeSizeUsd: 3000,
       description: 'Opera exclusivamente según el sentimiento de noticias y ratios fundamentales premium.',
       params: {
@@ -437,11 +437,13 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const balanceRef = useRef(balance);
   const holdingsRef = useRef(holdings);
   const botsRef = useRef(bots);
+  const newsRef = useRef(news);
 
   useEffect(() => { assetsRef.current = assets; }, [assets]);
   useEffect(() => { balanceRef.current = balance; }, [balance]);
   useEffect(() => { holdingsRef.current = holdings; }, [holdings]);
   useEffect(() => { botsRef.current = bots; }, [bots]);
+  useEffect(() => { newsRef.current = news; }, [news]);
   const isApiLiveRef = useRef(isApiLive);
   useEffect(() => { isApiLiveRef.current = isApiLive; }, [isApiLive]);
 
@@ -511,6 +513,24 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }
 
     // 1. Cargar Criptomonedas (Binance - Con try/catch individual por token para evitar fallos masivos)
+    let binanceTickers: Record<string, { price: number, changePercent: number }> = {};
+    try {
+      const symbolsQuery = JSON.stringify(cryptoSymbols.map(sym => `${sym}USDT`));
+      const res = await fetch(`https://api.binance.com/api/v3/ticker/24hr?symbols=${encodeURIComponent(symbolsQuery)}`);
+      if (res.ok) {
+        const data = await res.json();
+        data.forEach((item: any) => {
+          const symbol = item.symbol.replace('USDT', '');
+          binanceTickers[symbol] = {
+            price: Number(item.lastPrice),
+            changePercent: Number(item.priceChangePercent)
+          };
+        });
+      }
+    } catch (e) {
+      console.warn('Failed fetching initial crypto tickers from Binance:', e);
+    }
+
     try {
       const cryptoPromises = cryptoSymbols.map(async (symbol) => {
         try {
@@ -532,16 +552,21 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
         if (asset.type === 'crypto') {
           const fetched = fetchedCryptos.find(f => f.symbol === asset.symbol);
           const tvData = tvPrices[asset.symbol];
+          const binanceTicker = binanceTickers[asset.symbol];
           
-          let lastPrice = asset.price;
+          let lastPrice = binanceTicker?.price || asset.price;
           let priceHistory = asset.priceHistory;
-          let changePercent = asset.changePercent;
+          let changePercent = binanceTicker?.changePercent || asset.changePercent;
 
           if (fetched && fetched.priceHistory.length >= 2) {
-            priceHistory = fetched.priceHistory;
-            lastPrice = priceHistory[priceHistory.length - 1];
-            const prevPrice = priceHistory[priceHistory.length - 2];
-            changePercent = ((lastPrice - prevPrice) / prevPrice) * 100;
+            priceHistory = [...fetched.priceHistory];
+            if (binanceTicker) {
+              priceHistory[priceHistory.length - 1] = binanceTicker.price;
+            } else {
+              lastPrice = priceHistory[priceHistory.length - 1];
+              const prevPrice = priceHistory[priceHistory.length - 2];
+              changePercent = ((lastPrice - prevPrice) / prevPrice) * 100;
+            }
           }
           
           return {
@@ -1030,9 +1055,9 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       if (currentAssets.length === 0) return;
 
       const newNewsEvent = generateRandomNews(currentAssets);
-      let updatedNewsList = news;
+      let updatedNewsList = newsRef.current;
       if (newNewsEvent) {
-        updatedNewsList = [newNewsEvent, ...news].slice(0, 15); // Guardar últimos 15 eventos de noticias
+        updatedNewsList = [newNewsEvent, ...newsRef.current].slice(0, 15); // Guardar últimos 15 eventos de noticias
         setNews(updatedNewsList);
         addLog(`NOTICIA: ${newNewsEvent.headline} (Impacto: ${newNewsEvent.impact.toUpperCase()})`, 'market');
       }
@@ -1047,39 +1072,44 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
         lastPeriodRef.current = currentPeriodVal;
       }
 
-      // Obtener precios e indicadores en vivo de forma unificada desde TradingView
+      // Obtener precios de criptomonedas directamente de Binance en tiempo real (evita discrepancias)
       let livePrices: Record<string, any> = {};
-      let liveCryptoPrices: { symbol: string, price: number }[] = [];
+      let liveCryptoPrices: { symbol: string, price: number, changePercent: number }[] = [];
 
       const activeCryptos = currentAssets.filter(a => a.type === 'crypto').map(a => a.symbol);
       const activeStocks = currentAssets.filter(a => a.type === 'stock').map(a => a.symbol);
 
-      try {
-        const allSymbols = [...activeCryptos, ...activeStocks];
-        livePrices = await fetchTradingViewPrices(allSymbols, timeframe);
-      } catch (err) {
-        console.warn('Failed fetching live prices from TradingView Scanner in tick:', err);
-      }
-
-      // Fallback de Binance si no obtuvimos todas las cryptos en TradingView
-      const hasCryptosInTv = activeCryptos.every(sym => livePrices[sym] !== undefined);
-      if (!hasCryptosInTv) {
+      if (activeCryptos.length > 0) {
         try {
-          const res = await fetchWithTimeout('https://api.binance.com/api/v3/ticker/price', {}, 2500);
+          const symbolsQuery = JSON.stringify(activeCryptos.map(sym => `${sym}USDT`));
+          const res = await fetchWithTimeout(`https://api.binance.com/api/v3/ticker/24hr?symbols=${encodeURIComponent(symbolsQuery)}`, {}, 2500);
           if (res.ok) {
             const data = await res.json();
-            liveCryptoPrices = activeCryptos.map(sym => {
-              const ticker = data.find((t: any) => t.symbol === `${sym}USDT`);
-              return ticker ? { symbol: sym, price: Number(ticker.price) } : null;
-            }).filter(Boolean) as any;
+            liveCryptoPrices = data.map((item: any) => {
+              const symbol = item.symbol.replace('USDT', '');
+              return {
+                symbol,
+                price: Number(item.lastPrice),
+                changePercent: Number(item.priceChangePercent)
+              };
+            });
           }
         } catch (err) {
-          // Silencioso
+          console.warn('Failed fetching real-time crypto prices from Binance:', err);
         }
       }
 
-      const hasLiveCrypto = liveCryptoPrices.length > 0 || activeCryptos.some(sym => livePrices[sym] !== undefined);
-      const hasLiveStock = activeStocks.some(sym => livePrices[sym] !== undefined);
+      // Obtener precios de acciones desde TradingView Scanner
+      if (activeStocks.length > 0) {
+        try {
+          livePrices = await fetchTradingViewPrices(activeStocks, timeframe);
+        } catch (err) {
+          console.warn('Failed fetching live stock prices from TradingView Scanner in tick:', err);
+        }
+      }
+
+      const hasLiveCrypto = liveCryptoPrices.length > 0;
+      const hasLiveStock = Object.keys(livePrices).length > 0;
       const currentLiveState = hasLiveCrypto || hasLiveStock;
 
       if (currentLiveState !== isApiLiveRef.current) {
@@ -1088,8 +1118,7 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
       // Actualizar el precio final y el historial de TODOS los activos alineados con el timeframe
       nextAssets = nextAssets.map(asset => {
-        let finalPrice = asset.price;
-        let changePercent = asset.changePercent;
+        let finalPrice = asset.price; // Precio fluctuado/simulado de tickAssets
         let updatedRealBasePrice = asset.realBasePrice;
         
         let tvRsi = asset.tvRsi;
@@ -1101,51 +1130,72 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
         let tvSma100 = asset.tvSma100;
 
         const tvData = livePrices[asset.symbol];
+        const liveCrypto = asset.type === 'crypto' ? liveCryptoPrices.find(l => l.symbol === asset.symbol) : null;
+
+        let hasNewApiPrice = false;
+        let newApiPrice = 0;
+        let newApiChangePercent = 0;
+
         if (tvData) {
-          finalPrice = tvData.price;
-          changePercent = tvData.changePercent;
-          updatedRealBasePrice = tvData.price;
-          
-          tvRsi = tvData.rsi;
-          tvMacdHist = tvData.macdHist;
-          tvSma10 = tvData.sma10;
-          tvSma20 = tvData.sma20;
-          tvSma30 = tvData.sma30;
-          tvSma50 = tvData.sma50;
-          tvSma100 = tvData.sma100;
-        } else if (asset.type === 'crypto') {
-          const live = liveCryptoPrices.find(l => l.symbol === asset.symbol);
-          if (live) {
-            finalPrice = live.price;
-            updatedRealBasePrice = live.price;
+          if (tvData.price !== asset.realBasePrice) {
+            hasNewApiPrice = true;
+            newApiPrice = tvData.price;
+            newApiChangePercent = tvData.changePercent;
           }
+        } else if (liveCrypto) {
+          if (liveCrypto.price !== asset.realBasePrice) {
+            hasNewApiPrice = true;
+            newApiPrice = liveCrypto.price;
+            newApiChangePercent = liveCrypto.changePercent;
+          }
+        }
+
+        if (hasNewApiPrice) {
+          // Si hay precio nuevo de la API, nos sincronizamos
+          finalPrice = newApiPrice;
+          updatedRealBasePrice = newApiPrice;
+          
+          if (tvData) {
+            tvRsi = tvData.rsi;
+            tvMacdHist = tvData.macdHist;
+            tvSma10 = tvData.sma10;
+            tvSma20 = tvData.sma20;
+            tvSma30 = tvData.sma30;
+            tvSma50 = tvData.sma50;
+            tvSma100 = tvData.sma100;
+          }
+        } else {
+          // Si no hay precio nuevo de la API (estático, cacheado o cerrado), dejamos el precio simulado fluctuante
+          // y mantenemos el realBasePrice actual.
         }
 
         const history = [...asset.priceHistory];
-        const isStockClosed = asset.type === 'stock' && isStockMarketClosed();
 
-        // Si el mercado de acciones está abierto, o si tenemos datos en vivo (a pesar del cierre), actualizamos la historia
-        if (!(isStockClosed && !livePrices[asset.symbol])) {
-          if (isNewPeriod) {
-            history.push(finalPrice);
-            if (history.length > 100) history.shift();
+        // Siempre actualizamos el historial de precios para reflejar las fluctuaciones de la simulación
+        if (isNewPeriod) {
+          history.push(finalPrice);
+          if (history.length > 100) history.shift();
+        } else {
+          if (history.length > 0) {
+            history[history.length - 1] = finalPrice;
           } else {
-            if (history.length > 0) {
-              history[history.length - 1] = finalPrice;
-            } else {
-              history.push(finalPrice);
-            }
+            history.push(finalPrice);
           }
         }
 
-        const prevPrice = history[history.length - 2] || finalPrice;
-        const finalChangePct = (asset.type === 'stock' && livePrices[asset.symbol])
-          ? changePercent
-          : (isStockClosed ? asset.changePercent : (((finalPrice - prevPrice) / prevPrice) * 100));
+        // Si se sincronizó un precio nuevo de API con su porcentaje de cambio, lo usamos.
+        // De lo contrario, calculamos el porcentaje de cambio simulado con respecto al precio anterior de la historia.
+        let finalChangePct = asset.changePercent;
+        if (hasNewApiPrice) {
+          finalChangePct = newApiChangePercent;
+        } else {
+          const prevPrice = history[history.length - 2] || finalPrice;
+          finalChangePct = prevPrice > 0 ? (((finalPrice - prevPrice) / prevPrice) * 100) : 0;
+        }
 
         return {
           ...asset,
-          price: finalPrice,
+          price: Number(finalPrice.toFixed(2)),
           priceHistory: history,
           changePercent: finalChangePct,
           realBasePrice: updatedRealBasePrice,
@@ -1447,7 +1497,7 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
     const intervalId = setInterval(runSimulationTick, simSpeed);
     return () => clearInterval(intervalId);
-  }, [simSpeed, news]); // Actualizar cuando cambie la velocidad o se reciba noticia
+  }, [simSpeed, timeframe]); // Actualizar cuando cambie la velocidad o el timeframe
 
   // Función para agregar un activo externo desde la pestaña de Discovery
   const addExternalAsset = (symbol: string) => {

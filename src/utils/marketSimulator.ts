@@ -464,9 +464,8 @@ export function isStockMarketClosed(): boolean {
  */
 export function tickAssets(assets: Asset[], activeNews: NewsEvent[]): Asset[] {
   return assets.map(asset => {
-    if (asset.type === 'stock' && isStockMarketClosed()) {
-      return asset; // No cambiar nada para las acciones si el mercado está cerrado
-    }
+    const isClosed = asset.type === 'stock' && isStockMarketClosed();
+    
     // 1. Encontrar noticias recientes asociadas a este activo
     const assetNews = activeNews.filter(n => n.assetSymbol === asset.symbol);
     
@@ -485,7 +484,7 @@ export function tickAssets(assets: Asset[], activeNews: NewsEvent[]): Asset[] {
     // Volatilidad del activo: reducir para stocks para evitar variaciones extremas en ticks de 3s
     let baseVol = INITIAL_ASSETS_DATA.find(d => d.symbol === asset.symbol)?.volatility || 0.01;
     if (asset.type === 'stock') {
-      baseVol = baseVol * 0.15; // Reducir volatilidad de acciones a un 15% para que sea más estable
+      baseVol = isClosed ? baseVol * 0.03 : baseVol * 0.15; // Volatilidad reducida aún más si está cerrado, pero aún fluctúa
     }
     
     // El sentimiento amplifica o deprime el sesgo de la tendencia
