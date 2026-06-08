@@ -258,3 +258,42 @@ h1, h2, h3, h4, h5, h6 {
   50% { opacity: 0.4; }
 }
 
+/* ═══════════════════════════════════════════════════════ */
+/* CT VISION PRO Panel                                     */
+/* ═══════════════════════════════════════════════════════ */
+
+.ct-vision-panel {
+  transition: all 0.3s ease;
+}
+.ct-vision-panel:hover {
+  border-color: rgba(95, 93, 236, 0.4) !important;
+  box-shadow: 0 0 28px rgba(95, 93, 236, 0.12), inset 0 1px 0 rgba(255,255,255,0.04) !important;
+}
+
+/* State badge pulse for bullish */
+.ct-state-pulse-buy {
+  animation: ct-pulse-buy 2s ease-in-out infinite;
+}
+@keyframes ct-pulse-buy {
+  0%, 100% { box-shadow: 0 0 8px rgba(0, 255, 170, 0.1); }
+  50% { box-shadow: 0 0 20px rgba(0, 255, 170, 0.25); }
+}
+
+/* State badge pulse for bearish */
+.ct-state-pulse-sell {
+  animation: ct-pulse-sell 2s ease-in-out infinite;
+}
+@keyframes ct-pulse-sell {
+  0%, 100% { box-shadow: 0 0 8px rgba(255, 70, 104, 0.1); }
+  50% { box-shadow: 0 0 20px rgba(255, 70, 104, 0.25); }
+}
+
+/* Blink animation for warning icons */
+.ct-blink {
+  animation: ct-blink-anim 1.4s ease-in-out infinite;
+}
+@keyframes ct-blink-anim {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+

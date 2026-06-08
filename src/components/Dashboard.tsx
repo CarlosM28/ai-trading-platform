@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { useTrading } from '../context/TradingContext';
 import { MarketChart } from './MarketChart';
+import { CTVisionPanel } from './CTVisionPanel';
 import { 
   TrendingUp, 
   TrendingDown, 
@@ -472,6 +473,9 @@ export const Dashboard: React.FC = () => {
               })}
             </div>
           </div>
+
+          {/* CT VISION PRO Panel */}
+          <CTVisionPanel />
 
           {/* Quick Manual Trade Pad */}
           {activeAsset && (
