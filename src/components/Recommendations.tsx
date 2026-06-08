@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { useTrading } from '../context/TradingContext';
-import { calculateRSI, calculateMACD, calculateSMA, calculateSupportResistance } from '../utils/indicators';
+import { analyzeAsset, type Verdict } from '../utils/quantAnalysis';
 import { 
   Award,
   CheckCircle2,
@@ -9,7 +9,9 @@ import {
   Cpu,
   Zap,
   Gamepad2,
-  Coins
+  Coins,
+  Shield,
+  AlertTriangle
 } from 'lucide-react';
 import { externalAssetsPool } from '../utils/externalAssets';
 
@@ -27,7 +29,7 @@ interface ExtAssetRec {
   sentimentScore: number;
   peRatio?: number;
   socialVolume?: number;
-  verdict: 'STRONG BUY' | 'BUY' | 'NEUTRAL' | 'SELL' | 'STRONG SELL';
+  verdict: Verdict;
   ratingColor: string;
   ratingBg: string;
   explanation: string;
@@ -240,137 +242,29 @@ export const Recommendations: React.FC = () => {
   // Calcular las recomendaciones cuantitativas para todos los activos
   const recommendationsData = useMemo(() => {
     return assets.map(asset => {
-      const prices = asset.priceHistory;
+      const analysis = analyzeAsset(asset);
       
-      // 1. Calcular indicadores
-      const rsi = calculateRSI(prices, 14);
-      const macd = calculateMACD(prices);
-      
-      const fastSma = calculateSMA(prices, 10);
-      const slowSma = calculateSMA(prices, 30);
-      const maTrend = fastSma > slowSma ? 'bullish' : 'bearish';
-
-      const sma20 = calculateSMA(prices, 20);
-      const sma80 = calculateSMA(prices, Math.min(80, prices.length));
-      const maTrendLong = sma20 > sma80 ? 'bullish' : 'bearish';
-
-      const { support, resistance } = calculateSupportResistance(prices, 20);
-      const isNearSupport = asset.price <= support * 1.02;
-      const isNearResistance = asset.price >= resistance * 0.98;
-
-      // 2. Sistema de puntuación cuantitativo
-      // Rango de -5 (Extremadamente Bajista/Venta Fuerte) a +5 (Extremadamente Alcista/Compra Fuerte)
-      let score = 0;
-
-      // Técnica 1: RSI
-      if (rsi < 32) score += 2;
-      else if (rsi < 40) score += 1;
-      else if (rsi > 68) score -= 2;
-      else if (rsi > 60) score -= 1;
-
-      // Técnica 2: MACD
-      if (macd.histogram > 0.5) score += 1.5;
-      else if (macd.histogram < -0.5) score -= 1.5;
-
-      // Técnica 3: Media Móvil Corto Plazo (Scalp 10/30)
-      if (maTrend === 'bullish') score += 0.5;
-      else score -= 0.5;
-
-      // Técnica 4: Media Móvil Medio/Largo Plazo (Macro 20/80)
-      if (maTrendLong === 'bullish') score += 1.0;
-      else score -= 1.0;
-
-      // Técnica 5: Soporte / Resistencia
-      if (isNearSupport) score += 1.0;
-      if (isNearResistance) score -= 1.0;
-
-      // Fundamental 1: Sentimiento de noticias
-      if (asset.sentimentScore > 0.3) score += 1.5;
-      else if (asset.sentimentScore > 0.1) score += 0.5;
-      else if (asset.sentimentScore < -0.3) score -= 1.5;
-      else if (asset.sentimentScore < -0.1) score -= 0.5;
-
-      // Fundamental 2: Ratios
-      if (asset.type === 'stock') {
-        const pe = asset.peRatio || 50;
-        if (pe < 30) score += 0.5; // Valuación atractiva
-        if (pe > 55) score -= 0.5; // Valuación inflada
-      } else {
-        const social = asset.socialVolume || 0;
-        const whale = asset.whaleBalanceChange || 0;
-        if (social > 5000 && whale > 0.5) score += 0.5; // Fuerte acumulación crypto
-      }
-
-      // 3. Determinar el veredicto y estilo visual
-      let verdict: 'STRONG BUY' | 'BUY' | 'NEUTRAL' | 'SELL' | 'STRONG SELL' = 'NEUTRAL';
-      let ratingClass = 'badge-neutral';
-      let ratingColor = 'var(--text-muted)';
-      let ratingBg = 'rgba(148, 163, 184, 0.08)';
-
-      if (score >= 3.0) {
-        verdict = 'STRONG BUY';
-        ratingClass = 'badge-buy';
-        ratingColor = 'var(--color-buy)';
-        ratingBg = 'rgba(0, 255, 170, 0.08)';
-      } else if (score >= 1.0) {
-        verdict = 'BUY';
-        ratingClass = 'badge-buy';
-        ratingColor = 'var(--color-buy)';
-        ratingBg = 'rgba(0, 255, 170, 0.04)';
-      } else if (score <= -3.0) {
-        verdict = 'STRONG SELL';
-        ratingClass = 'badge-sell';
-        ratingColor = 'var(--color-sell)';
-        ratingBg = 'rgba(255, 70, 104, 0.08)';
-      } else if (score <= -1.0) {
-        verdict = 'SELL';
-        ratingClass = 'badge-sell';
-        ratingColor = 'var(--color-sell)';
-        ratingBg = 'rgba(255, 70, 104, 0.04)';
-      }
-
-      // 4. Generar explicación técnica/fundamental adaptada en tiempo real
-      let explanation = '';
-      if (asset.type === 'stock') {
-        if (verdict.includes('BUY')) {
-          explanation = `${asset.name} muestra fortaleza técnica. El cruce de medias móviles es alcista y el RSI de ${rsi.toFixed(0)} señala margen de crecimiento. Además, el ratio P/E de ${asset.peRatio} está sustentado por un fuerte sentimiento del mercado (${(asset.sentimentScore * 100).toFixed(0)}% positivo) y sólidas noticias sectoriales.`;
-        } else if (verdict.includes('SELL')) {
-          explanation = `Vigilancia en ${asset.name}. El sentimiento de los medios ha caído a ${(asset.sentimentScore * 100).toFixed(0)}% debido a eventos macroeconómicos adversos. El MACD muestra agotamiento bajista y el RSI sobrecomprado desaconseja abrir posiciones largas aquí.`;
-        } else {
-          explanation = `${asset.name} consolida en un rango lateral. Con un RSI neutro de ${rsi.toFixed(0)} y bajo impulso de volumen, sugerimos mantener posiciones sin realizar nuevas compras hasta que ocurra un catalizador fundamental.`;
-        }
-      } else {
-        // Crypto
-        if (verdict.includes('BUY')) {
-          explanation = `Crypto Rating ALTA: ${asset.symbol} está bajo acumulación institucional activa. El flujo neto de ballenas (+${asset.whaleBalanceChange}%) es muy favorable. Con el RSI en ${rsi.toFixed(0)} y volumen social en aumento (${asset.socialVolume} menciones/h), se perfila una ruptura alcista inminente.`;
-        } else if (verdict.includes('SELL')) {
-          explanation = `Crypto Riesgo: Presión de distribución detectada. Las ballenas han reducido su balance y el volumen en redes se ha enfriado sensiblemente. Técnicamente el histograma MACD es bajista y las medias apuntan a corrección de soporte.`;
-        } else {
-          explanation = `${asset.symbol} oscila sin una dirección clara en cadena. El RSI está estabilizado en ${rsi.toFixed(0)} y las ballenas mantienen un balance neutro. Recomendamos esperar noticias determinantes o reaccionar a niveles de soporte clave.`;
-        }
-      }
-
-      const srContext = isNearSupport 
-        ? ` El precio actual ($${asset.price.toLocaleString(undefined, { minimumFractionDigits: 2 })}) está testeando el soporte clave en $${support.toLocaleString(undefined, { minimumFractionDigits: 2 })}, zona ideal de acumulación.` 
-        : isNearResistance 
-          ? ` Se encuentra en zona de resistencia técnica en $${resistance.toLocaleString(undefined, { minimumFractionDigits: 2 })}, por lo que existe riesgo de rechazo a corto plazo.` 
-          : ` Cotiza de forma estable en un rango intermedio entre el soporte en $${support.toLocaleString(undefined, { minimumFractionDigits: 2 })} y la resistencia en $${resistance.toLocaleString(undefined, { minimumFractionDigits: 2 })}.`;
-      explanation += srContext;
-
       return {
         ...asset,
-        rsi,
-        macd,
-        maTrend,
-        maTrendLong,
-        support,
-        resistance,
-        score,
-        verdict,
-        ratingClass,
-        ratingColor,
-        ratingBg,
-        explanation
+        rsi: analysis.rsi,
+        macd: analysis.macd,
+        maTrend: analysis.maTrend,
+        maTrendLong: analysis.maTrendLong,
+        support: analysis.support,
+        resistance: analysis.resistance,
+        roc: analysis.roc,
+        atr: analysis.atr,
+        divergence: analysis.divergence,
+        score: analysis.totalScore,
+        confidencePercent: analysis.confidencePercent,
+        factors: analysis.factors,
+        contradictions: analysis.contradictions,
+        verdict: analysis.verdict,
+        ratingClass: analysis.verdict.includes('BUY') ? 'badge-buy' : analysis.verdict.includes('SELL') ? 'badge-sell' : 'badge-neutral',
+        ratingColor: analysis.ratingColor,
+        ratingBg: analysis.ratingBg,
+        explanation: analysis.explanation,
+        riskLevel: analysis.riskLevel
       };
     });
   }, [assets]);
@@ -684,6 +578,62 @@ export const Recommendations: React.FC = () => {
                   </div>
                 </div>
 
+                {/* Confidence Bar + Risk Level */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px', fontSize: '0.7rem' }}>
+                      <span style={{ color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                        <Shield size={11} /> Confianza
+                      </span>
+                      <span style={{ fontWeight: 700, color: rec.confidencePercent > 65 ? 'var(--color-buy)' : rec.confidencePercent > 40 ? '#f59e0b' : 'var(--color-sell)' }}>
+                        {rec.confidencePercent}%
+                      </span>
+                    </div>
+                    <div style={{ width: '100%', height: '5px', background: 'rgba(255,255,255,0.06)', borderRadius: '3px', overflow: 'hidden' }}>
+                      <div style={{
+                        width: `${rec.confidencePercent}%`,
+                        height: '100%',
+                        background: rec.confidencePercent > 65 ? 'var(--color-buy)' : rec.confidencePercent > 40 ? '#f59e0b' : 'var(--color-sell)',
+                        borderRadius: '3px',
+                        transition: 'width 0.3s ease'
+                      }} />
+                    </div>
+                  </div>
+                  <div style={{
+                    display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.7rem', fontWeight: 700,
+                    padding: '3px 8px', borderRadius: '6px',
+                    background: rec.riskLevel === 'low' ? 'rgba(0,255,170,0.08)' : rec.riskLevel === 'medium' ? 'rgba(245,158,11,0.08)' : rec.riskLevel === 'high' ? 'rgba(255,120,50,0.08)' : 'rgba(255,70,104,0.08)',
+                    color: rec.riskLevel === 'low' ? 'var(--color-buy)' : rec.riskLevel === 'medium' ? '#f59e0b' : rec.riskLevel === 'high' ? '#ff7832' : 'var(--color-sell)',
+                    border: `1px solid ${rec.riskLevel === 'low' ? 'rgba(0,255,170,0.15)' : rec.riskLevel === 'medium' ? 'rgba(245,158,11,0.15)' : rec.riskLevel === 'high' ? 'rgba(255,120,50,0.15)' : 'rgba(255,70,104,0.15)'}`
+                  }}>
+                    {rec.riskLevel === 'low' ? '🟢' : rec.riskLevel === 'medium' ? '🟡' : rec.riskLevel === 'high' ? '🟠' : '🔴'}
+                    Riesgo: {rec.riskLevel === 'low' ? 'Bajo' : rec.riskLevel === 'medium' ? 'Medio' : rec.riskLevel === 'high' ? 'Alto' : 'Extremo'}
+                  </div>
+                </div>
+
+                {/* Contradiction Warning */}
+                {rec.contradictions && rec.contradictions.length > 0 && (
+                  <div style={{
+                    background: 'rgba(245, 158, 11, 0.06)',
+                    border: '1px solid rgba(245, 158, 11, 0.15)',
+                    borderRadius: '8px',
+                    padding: '8px 12px',
+                    fontSize: '0.72rem',
+                    color: '#f59e0b',
+                    display: 'flex',
+                    gap: '8px',
+                    alignItems: 'flex-start'
+                  }}>
+                    <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: '1px' }} />
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                      <span style={{ fontWeight: 700 }}>Señales contradictorias:</span>
+                      {rec.contradictions.map((c: string, idx: number) => (
+                        <span key={idx} style={{ color: 'rgba(245, 158, 11, 0.8)' }}>• {c}</span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 {/* Core Indicators Matrix Checklist */}
                 <div style={{
                   background: 'rgba(0,0,0,0.15)',
@@ -697,7 +647,7 @@ export const Recommendations: React.FC = () => {
                 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', borderRight: '1px solid rgba(255,255,255,0.05)', paddingRight: '8px' }}>
                     <span style={{ color: 'var(--text-muted)' }}>RSI (14):</span>
-                    <b style={{ color: rec.rsi < 35 ? 'var(--color-buy)' : rec.rsi > 65 ? 'var(--color-sell)' : 'var(--text-main)' }}>
+                    <b style={{ color: rec.rsi < 35 ? (rec.maTrend === 'bearish' && rec.maTrendLong === 'bearish' ? 'var(--color-sell)' : 'var(--color-buy)') : rec.rsi > 65 ? 'var(--color-sell)' : 'var(--text-main)' }}>
                       {rec.rsi.toFixed(1)}
                     </b>
                   </div>
@@ -743,26 +693,46 @@ export const Recommendations: React.FC = () => {
                   )}
 
                   <div style={{ display: 'flex', justifyContent: 'space-between', borderRight: '1px solid rgba(255,255,255,0.05)', paddingRight: '8px', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '8px' }}>
-                    <span style={{ color: 'var(--text-muted)' }}>Soporte (20):</span>
-                    <b style={{ color: 'var(--color-buy)' }}>
-                      ${rec.support?.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                    <span style={{ color: 'var(--text-muted)' }}>Momentum:</span>
+                    <b style={{ color: rec.roc > 1 ? 'var(--color-buy)' : rec.roc < -1 ? 'var(--color-sell)' : 'var(--text-main)' }}>
+                      {rec.roc > 0 ? '+' : ''}{rec.roc.toFixed(1)}%
                     </b>
                   </div>
 
                   <div style={{ display: 'flex', justifyContent: 'space-between', paddingLeft: '4px', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '8px' }}>
+                    <span style={{ color: 'var(--text-muted)' }}>
+                      {rec.price < rec.support ? '⚠️ Soporte:' : 'Soporte (20):'}
+                    </span>
+                    <b style={{ color: rec.price < rec.support ? 'var(--color-sell)' : 'var(--color-buy)' }}>
+                      ${rec.support?.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                    </b>
+                  </div>
+
+                  <div style={{ display: 'flex', justifyContent: 'space-between', borderRight: '1px solid rgba(255,255,255,0.05)', paddingRight: '8px', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '8px' }}>
                     <span style={{ color: 'var(--text-muted)' }}>Resistencia (20):</span>
                     <b style={{ color: 'var(--color-sell)' }}>
                       ${rec.resistance?.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                     </b>
                   </div>
+
+                  {rec.divergence && rec.divergence.type !== 'none' && rec.divergence.strength > 0.3 && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', paddingLeft: '4px', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '8px' }}>
+                      <span style={{ color: 'var(--text-muted)' }}>Divergencia:</span>
+                      <b style={{ color: rec.divergence.type === 'bullish' ? 'var(--color-buy)' : 'var(--color-sell)' }}>
+                        {rec.divergence.type === 'bullish' ? '📈 Alcista' : '📉 Bajista'} ({(rec.divergence.strength * 100).toFixed(0)}%)
+                      </b>
+                    </div>
+                  )}
                 </div>
 
                 {/* Analytical reasoning */}
                 <div style={{ flex: 1 }}>
                   <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--accent-secondary)' }}>ANÁLISIS DE CONSENSO:</span>
-                  <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', lineHeight: '1.4', marginTop: '4px' }}>
-                    {rec.explanation}
-                  </p>
+                  <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', lineHeight: '1.5', marginTop: '4px' }}>
+                    {rec.explanation.split('\n').filter(Boolean).map((line: string, idx: number) => (
+                      <p key={idx} style={{ margin: '0 0 4px 0' }}>{line}</p>
+                    ))}
+                  </div>
                 </div>
 
               </div>

@@ -7,6 +7,18 @@ import {
   CheckCircle2
 } from 'lucide-react';
 
+const XIcon: React.FC<{ size?: number; color?: string; style?: React.CSSProperties }> = ({ size = 18, color = 'currentColor', style }) => (
+  <svg 
+    viewBox="0 0 24 24" 
+    width={size} 
+    height={size} 
+    fill={color} 
+    style={{ display: 'inline-block', verticalAlign: 'middle', ...style }}
+  >
+    <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
+  </svg>
+);
+
 export const Settings: React.FC = () => {
   const { 
     simSpeed, 
@@ -26,6 +38,10 @@ export const Settings: React.FC = () => {
   // Estados locales para Alpaca Paper Trading
   const [alpacaKey, setAlpacaKey] = useState<string>(apiConfig.alpacaApiKey || '');
   const [alpacaSecret, setAlpacaSecret] = useState<string>(apiConfig.alpacaApiSecret || '');
+
+  // Estados locales para X (RapidAPI)
+  const [rapidKey, setRapidKey] = useState<string>(apiConfig.rapidApiKey || '');
+  const [rapidHost, setRapidHost] = useState<string>(apiConfig.rapidApiHost || 'twitter-api45.p.rapidapi.com');
 
   const handleReset = () => {
     if (window.confirm(`¿Estás seguro de restablecer el portafolio? Esto eliminará todas las tenencias actuales y fijará el saldo en $${initialBalanceInput.toLocaleString()} USD.`)) {
@@ -113,6 +129,31 @@ export const Settings: React.FC = () => {
     });
     setAlpacaKey('');
     setAlpacaSecret('');
+  };
+
+  const handleConnectRapid = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!rapidKey) {
+      alert('Por favor ingresa tu API Key de RapidAPI.');
+      return;
+    }
+
+    setApiConfig(prev => ({
+      ...prev,
+      rapidApiKey: rapidKey,
+      rapidApiHost: rapidHost,
+      rapidApiConnected: true
+    }));
+  };
+
+  const handleDisconnectRapid = () => {
+    setApiConfig(prev => ({
+      ...prev,
+      rapidApiKey: '',
+      rapidApiHost: 'twitter-api45.p.rapidapi.com',
+      rapidApiConnected: false
+    }));
+    setRapidKey('');
   };
 
   return (
@@ -460,6 +501,126 @@ export const Settings: React.FC = () => {
                   }}
                 >
                   CONECTAR ALPACA PAPER
+                </button>
+              </form>
+            )}
+          </div>
+
+          {/* Card 3: X (Twitter) via RapidAPI */}
+          <div className="glass-card" style={{ padding: '24px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '16px' }}>
+              <XIcon size={18} color="#1DA1F2" />
+              <h3 style={{ fontSize: '1.1rem', fontWeight: 700 }}>Conexión con X (RapidAPI)</h3>
+            </div>
+            
+            <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '16px', lineHeight: '1.4' }}>
+              Conecta un proveedor de datos de X (Twitter) desde RapidAPI para recibir comentarios reales y análisis de sentimiento social de criptos y acciones.
+            </p>
+
+            {apiConfig.rapidApiConnected ? (
+              <div style={{
+                background: 'rgba(0, 255, 170, 0.04)',
+                border: '1px solid rgba(0, 255, 170, 0.15)',
+                borderRadius: '12px',
+                padding: '16px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '12px'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <CheckCircle2 size={20} color="var(--color-buy)" />
+                  <div>
+                    <h4 style={{ fontSize: '0.9rem', fontWeight: 700, color: 'var(--text-main)' }}>X (Twitter) Conectado</h4>
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Búsquedas mediante {apiConfig.rapidApiHost}</span>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem' }}>
+                  <span style={{ color: 'var(--text-muted)' }}>Host API:</span>
+                  <span>{apiConfig.rapidApiHost}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem' }}>
+                  <span style={{ color: 'var(--text-muted)' }}>API Key:</span>
+                  <span style={{ fontFamily: 'monospace' }}>{apiConfig.rapidApiKey ? apiConfig.rapidApiKey.substring(0, 6) + '...****' : ''}</span>
+                </div>
+                <button
+                  onClick={handleDisconnectRapid}
+                  style={{
+                    background: 'transparent',
+                    border: '1px solid rgba(255, 70, 104, 0.3)',
+                    color: 'var(--color-sell)',
+                    borderRadius: '8px',
+                    padding: '8px 0',
+                    fontSize: '0.8rem',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    transition: 'all 0.2s ease'
+                  }}
+                >
+                  DESCONECTAR X API
+                </button>
+              </div>
+            ) : (
+              <form onSubmit={handleConnectRapid} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Proveedor / Host de RapidAPI</label>
+                  <select
+                    value={rapidHost}
+                    onChange={(e) => setRapidHost(e.target.value)}
+                    style={{
+                      width: '100%',
+                      background: 'rgba(0,0,0,0.3)',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '8px',
+                      padding: '8px 12px',
+                      color: 'var(--text-main)',
+                      fontSize: '0.85rem',
+                      outline: 'none',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    <option value="twitter-api45.p.rapidapi.com" style={{ background: '#121214' }}>
+                      twitter-api45.p.rapidapi.com (Recomendado)
+                    </option>
+                    <option value="twitter-api-v2.p.rapidapi.com" style={{ background: '#121214' }}>
+                      twitter-api-v2.p.rapidapi.com (Alternativo)
+                    </option>
+                  </select>
+                </div>
+                
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                  <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>RapidAPI Key</label>
+                  <input
+                    type="password"
+                    placeholder="Introduce tu clave de RapidAPI..."
+                    value={rapidKey}
+                    onChange={(e) => setRapidKey(e.target.value)}
+                    style={{
+                      width: '100%',
+                      background: 'rgba(0,0,0,0.3)',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: '8px',
+                      padding: '8px 12px',
+                      color: 'var(--text-main)',
+                      fontSize: '0.85rem',
+                      outline: 'none',
+                    }}
+                  />
+                </div>
+                <button
+                  type="submit"
+                  style={{
+                    background: 'var(--accent-primary)',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '8px',
+                    padding: '10px 0',
+                    fontWeight: 700,
+                    fontSize: '0.85rem',
+                    cursor: 'pointer',
+                    boxShadow: '0 0 15px rgba(95, 93, 236, 0.15)'
+                  }}
+                >
+                  CONECTAR API DE X
                 </button>
               </form>
             )}

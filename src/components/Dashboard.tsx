@@ -381,44 +381,69 @@ export const Dashboard: React.FC = () => {
                   No se encontraron noticias reales recientes para este activo.
                 </div>
               ) : (
-                realNews.map((item) => (
-                  <div 
-                    key={item.id} 
-                    onClick={() => item.link && window.open(item.link, '_blank')}
-                    style={{
-                      background: 'rgba(255,255,255,0.01)',
-                      border: '1px solid rgba(255,255,255,0.03)',
-                      borderRadius: '10px',
-                      padding: '12px',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      gap: '6px',
-                      cursor: item.link ? 'pointer' : 'default',
-                      transition: 'all 0.2s',
-                    }}
-                    onMouseEnter={(e) => {
-                      if (item.link) {
-                        e.currentTarget.style.background = 'rgba(255,255,255,0.05)';
-                        e.currentTarget.style.borderColor = 'var(--accent-primary)';
-                      }
-                    }}
-                    onMouseLeave={(e) => {
-                      if (item.link) {
-                        e.currentTarget.style.background = 'rgba(255,255,255,0.01)';
-                        e.currentTarget.style.borderColor = 'rgba(255,255,255,0.03)';
-                      }
-                    }}
-                  >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span className={item.impact === 'positive' ? 'badge-buy' : item.impact === 'negative' ? 'badge-sell' : 'badge-neutral'} style={{ fontSize: '0.7rem', padding: '1px 6px', borderRadius: '4px', fontWeight: 600 }}>
-                        {item.assetSymbol} | {item.impact.toUpperCase()}
-                      </span>
-                      <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{item.timestamp}</span>
+                realNews.map((item) => {
+                  const isTwitter = item.source === 'twitter';
+                  return (
+                    <div 
+                      key={item.id} 
+                      onClick={() => item.link && window.open(item.link, '_blank')}
+                      style={{
+                        background: isTwitter ? 'rgba(29, 161, 242, 0.02)' : 'rgba(255,255,255,0.01)',
+                        border: isTwitter ? '1px solid rgba(29, 161, 242, 0.12)' : '1px solid rgba(255,255,255,0.03)',
+                        borderRadius: '10px',
+                        padding: '12px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '6px',
+                        cursor: item.link ? 'pointer' : 'default',
+                        transition: 'all 0.2s',
+                      }}
+                      onMouseEnter={(e) => {
+                        if (item.link) {
+                          e.currentTarget.style.background = isTwitter ? 'rgba(29, 161, 242, 0.08)' : 'rgba(255,255,255,0.05)';
+                          e.currentTarget.style.borderColor = isTwitter ? '#1DA1F2' : 'var(--accent-primary)';
+                        }
+                      }}
+                      onMouseLeave={(e) => {
+                        if (item.link) {
+                          e.currentTarget.style.background = isTwitter ? 'rgba(29, 161, 242, 0.02)' : 'rgba(255,255,255,0.01)';
+                          e.currentTarget.style.borderColor = isTwitter ? 'rgba(29, 161, 242, 0.12)' : 'rgba(255,255,255,0.03)';
+                        }
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                          <span className={item.impact === 'positive' ? 'badge-buy' : item.impact === 'negative' ? 'badge-sell' : 'badge-neutral'} style={{ fontSize: '0.7rem', padding: '1px 6px', borderRadius: '4px', fontWeight: 600 }}>
+                            {item.assetSymbol} | {item.impact.toUpperCase()}
+                          </span>
+                          {isTwitter && (
+                            <span style={{ 
+                              background: '#121214', 
+                              border: '1px solid rgba(255,255,255,0.1)', 
+                              color: '#1DA1F2', 
+                              fontSize: '0.65rem', 
+                              padding: '1px 5px', 
+                              borderRadius: '4px', 
+                              display: 'flex', 
+                              alignItems: 'center', 
+                              gap: '3px', 
+                              fontWeight: 700 
+                            }}>
+                              𝕏 Feed
+                            </span>
+                          )}
+                        </div>
+                        <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{item.timestamp}</span>
+                      </div>
+                      <h4 style={{ fontSize: '0.9rem', fontWeight: 600, color: isTwitter ? '#1DA1F2' : 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                        {item.headline}
+                      </h4>
+                      <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', lineHeight: '1.3', fontStyle: isTwitter ? 'italic' : 'normal' }}>
+                        {item.content}
+                      </p>
                     </div>
-                    <h4 style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text-main)' }}>{item.headline}</h4>
-                    <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', lineHeight: '1.3' }}>{item.content}</p>
-                  </div>
-                ))
+                  );
+                })
               )}
             </div>
           </div>

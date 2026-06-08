@@ -211,6 +211,7 @@ export function calculateFibonacciLevels(prices: number[], windowSize: number = 
   };
 }
 
+<<<<<<< HEAD
 // ═══════════════════════════════════════════════════════════════════
 // CT VISION PRO — Funciones de análisis avanzado
 // ═══════════════════════════════════════════════════════════════════
@@ -540,5 +541,92 @@ export function calculatePriceTarget(prices: number[]): PriceTargetResult {
     direction: trendUp ? 'up' : 'down',
     distancePercent,
   };
+=======
+/**
+ * Calcula el Rate of Change (ROC) — momentum del precio como porcentaje.
+ * ROC = ((Precio actual - Precio hace N períodos) / Precio hace N períodos) * 100
+ */
+export function calculateROC(prices: number[], period: number = 10): number {
+  if (prices.length < period + 1) return 0;
+  const current = prices[prices.length - 1];
+  const past = prices[prices.length - 1 - period];
+  if (past === 0) return 0;
+  return ((current - past) / past) * 100;
+}
+
+/**
+ * Calcula el Average True Range (ATR) — volatilidad real del activo.
+ * Usa los precios de cierre disponibles como proxy (sin datos high/low/open).
+ */
+export function calculateATR(prices: number[], period: number = 14): number {
+  if (prices.length < 2) return 0;
+  
+  const trueRanges: number[] = [];
+  for (let i = 1; i < prices.length; i++) {
+    // Sin datos de high/low, aproximamos con la variación absoluta entre cierres
+    trueRanges.push(Math.abs(prices[i] - prices[i - 1]));
+  }
+
+  if (trueRanges.length < period) {
+    return trueRanges.reduce((s, v) => s + v, 0) / trueRanges.length;
+  }
+
+  // Smoothed ATR (Wilder)
+  let atr = trueRanges.slice(0, period).reduce((s, v) => s + v, 0) / period;
+  for (let i = period; i < trueRanges.length; i++) {
+    atr = (atr * (period - 1) + trueRanges[i]) / period;
+  }
+  return atr;
+}
+
+export interface DivergenceResult {
+  type: 'bullish' | 'bearish' | 'none';
+  strength: number; // 0 a 1
+}
+
+/**
+ * Detecta divergencias entre el RSI y el precio:
+ * - Divergencia alcista: precio hace nuevos mínimos, pero RSI sube (señal de rebote)
+ * - Divergencia bajista: precio hace nuevos máximos, pero RSI baja (señal de agotamiento)
+ * Analiza los últimos 'lookback' períodos comparando dos mitades.
+ */
+export function detectRSIPriceDivergence(prices: number[], period: number = 14, lookback: number = 20): DivergenceResult {
+  if (prices.length < lookback + period) return { type: 'none', strength: 0 };
+
+  const recentPrices = prices.slice(-lookback);
+  const midPoint = Math.floor(recentPrices.length / 2);
+  
+  const firstHalfPrices = recentPrices.slice(0, midPoint);
+  const secondHalfPrices = recentPrices.slice(midPoint);
+
+  const firstHalfMinPrice = Math.min(...firstHalfPrices);
+  const secondHalfMinPrice = Math.min(...secondHalfPrices);
+  const firstHalfMaxPrice = Math.max(...firstHalfPrices);
+  const secondHalfMaxPrice = Math.max(...secondHalfPrices);
+
+  // Calcular RSI de cada mitad usando sus ventanas respectivas
+  const rsiSlice1 = prices.slice(0, prices.length - lookback + midPoint);
+  const rsiSlice2 = prices;
+  const rsi1 = calculateRSI(rsiSlice1, period);
+  const rsi2 = calculateRSI(rsiSlice2, period);
+
+  // Divergencia alcista: precio baja + RSI sube
+  if (secondHalfMinPrice < firstHalfMinPrice && rsi2 > rsi1) {
+    const priceDropPct = (firstHalfMinPrice - secondHalfMinPrice) / firstHalfMinPrice;
+    const rsiRise = rsi2 - rsi1;
+    const strength = Math.min(1, (priceDropPct * 10 + rsiRise / 50) / 2);
+    return { type: 'bullish', strength: Math.max(0, Math.min(1, strength)) };
+  }
+
+  // Divergencia bajista: precio sube + RSI baja
+  if (secondHalfMaxPrice > firstHalfMaxPrice && rsi2 < rsi1) {
+    const priceRisePct = (secondHalfMaxPrice - firstHalfMaxPrice) / firstHalfMaxPrice;
+    const rsiDrop = rsi1 - rsi2;
+    const strength = Math.min(1, (priceRisePct * 10 + rsiDrop / 50) / 2);
+    return { type: 'bearish', strength: Math.max(0, Math.min(1, strength)) };
+  }
+
+  return { type: 'none', strength: 0 };
+>>>>>>> fbd77ee2b6ed111f3899993fb26127418abf740e
 }
 
