@@ -15,6 +15,8 @@ export interface Asset {
   whaleBalanceChange?: number; // Solo Crypto (Flujo neto de billeteras grandes %)
   sentimentScore: number;      // Sentimiento del mercado de -1.0 (Muy Bajista) a 1.0 (Muy Alcista)
   allowedForBots?: boolean;    // Habilitado para operar con bots
+  hasLiveData?: boolean;       // true si el precio/historial proviene de una API real (no sintético)
+  dataMode?: 'live' | 'simulation'; // Modo bajo el que se generó/actualizó este activo
   realBasePrice?: number;      // Precio de cotización real inicial cargado de la API
   // Indicadores técnicos en tiempo real de TradingView Scanner API
   tvRsi?: number;

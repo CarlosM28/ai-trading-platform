@@ -1,3 +1,5 @@
+import type { Asset } from './marketSimulator';
+
 /**
  * Calcula la Media Móvil Simple (SMA) para un conjunto de precios.
  */
@@ -211,7 +213,6 @@ export function calculateFibonacciLevels(prices: number[], windowSize: number = 
   };
 }
 
-<<<<<<< HEAD
 // ═══════════════════════════════════════════════════════════════════
 // CT VISION PRO — Funciones de análisis avanzado
 // ═══════════════════════════════════════════════════════════════════
@@ -541,7 +542,8 @@ export function calculatePriceTarget(prices: number[]): PriceTargetResult {
     direction: trendUp ? 'up' : 'down',
     distancePercent,
   };
-=======
+}
+
 /**
  * Calcula el Rate of Change (ROC) — momentum del precio como porcentaje.
  * ROC = ((Precio actual - Precio hace N períodos) / Precio hace N períodos) * 100
@@ -627,6 +629,56 @@ export function detectRSIPriceDivergence(prices: number[], period: number = 14, 
   }
 
   return { type: 'none', strength: 0 };
->>>>>>> fbd77ee2b6ed111f3899993fb26127418abf740e
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ACCESORES UNIFICADOS DE INDICADORES
+// Una sola fuente de verdad para que el panel, el motor de análisis y los
+// bots usen exactamente el mismo valor. En modo LIVE se priorizan los
+// indicadores reales calculados por TradingView (tvRsi, tvSma*, tvMacdHist);
+// si falta alguno se cae al cálculo local sobre el historial real. En modo
+// SIMULACIÓN siempre se calcula localmente sobre el historial sintético, para
+// que el sandbox sea internamente coherente.
+// ═══════════════════════════════════════════════════════════════════
+
+function tvSmaForPeriod(asset: Asset, period: number): number | undefined {
+  switch (period) {
+    case 10: return asset.tvSma10;
+    case 20: return asset.tvSma20;
+    case 30: return asset.tvSma30;
+    case 50: return asset.tvSma50;
+    case 100: return asset.tvSma100;
+    default: return undefined;
+  }
+}
+
+/** RSI del activo: real (TradingView) en Live si está disponible, si no local. */
+export function resolveRSI(asset: Asset): number {
+  if (asset.dataMode === 'live' && typeof asset.tvRsi === 'number') {
+    return asset.tvRsi;
+  }
+  return calculateRSI(asset.priceHistory, 14);
+}
+
+/** SMA del activo para un periodo dado, priorizando TradingView en Live. */
+export function resolveSMA(asset: Asset, period: number): number {
+  if (asset.dataMode === 'live') {
+    const tv = tvSmaForPeriod(asset, period);
+    if (typeof tv === 'number') return tv;
+  }
+  return calculateSMA(asset.priceHistory, period);
+}
+
+/**
+ * MACD del activo. Las líneas macd/signal se calculan localmente (TradingView
+ * solo nos da el snapshot actual), pero el histograma —que es lo que usan el
+ * scoring y los bots— se toma del valor real de TradingView en Live si existe.
+ */
+export function resolveMACD(asset: Asset): MACDResult {
+  const local = calculateMACD(asset.priceHistory);
+  if (asset.dataMode === 'live' && typeof asset.tvMacdHist === 'number') {
+    return { macd: local.macd, signal: local.signal, histogram: asset.tvMacdHist };
+  }
+  return local;
 }
 

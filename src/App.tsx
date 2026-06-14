@@ -5,6 +5,7 @@ import { Dashboard } from './components/Dashboard';
 import { BotsControl } from './components/BotsControl';
 import { PortfolioView } from './components/PortfolioView';
 import { Recommendations } from './components/Recommendations';
+import { Backtesting } from './components/Backtesting';
 import { Settings } from './components/Settings';
 import { HistoryAnalysis } from './components/HistoryAnalysis';
 import { FutureTrends } from './components/FutureTrends';
@@ -20,6 +21,7 @@ const AppContent: React.FC = () => {
         {activeTab === 'bots' && <BotsControl />}
         {activeTab === 'portfolio' && <PortfolioView />}
         {activeTab === 'recommendations' && <Recommendations />}
+        {activeTab === 'backtesting' && <Backtesting />}
         {activeTab === 'history_analysis' && <HistoryAnalysis />}
         {activeTab === 'future_trends' && <FutureTrends />}
         {activeTab === 'settings' && <Settings />}

@@ -16,13 +16,13 @@
 
 import type { Asset } from './marketSimulator';
 import {
-  calculateRSI,
-  calculateMACD,
-  calculateSMA,
   calculateSupportResistance,
   calculateROC,
   calculateATR,
   detectRSIPriceDivergence,
+  resolveRSI,
+  resolveMACD,
+  resolveSMA,
   type DivergenceResult
 } from './indicators';
 
@@ -92,15 +92,16 @@ export function analyzeAsset(asset: Asset): QuantAnalysisResult {
 
   // ── 1. Calcular todos los indicadores ──
 
-  const rsi = calculateRSI(prices, 14);
-  const macd = calculateMACD(prices);
+  // Indicadores unificados: en Live priorizan los valores reales de TradingView
+  const rsi = resolveRSI(asset);
+  const macd = resolveMACD(asset);
 
-  const fastSma = calculateSMA(prices, 10);
-  const slowSma = calculateSMA(prices, 30);
+  const fastSma = resolveSMA(asset, 10);
+  const slowSma = resolveSMA(asset, 30);
   const maTrend = fastSma > slowSma ? 'bullish' as const : 'bearish' as const;
 
-  const sma20 = calculateSMA(prices, 20);
-  const sma80 = calculateSMA(prices, Math.min(80, prices.length));
+  const sma20 = resolveSMA(asset, 20);
+  const sma80 = resolveSMA(asset, Math.min(80, prices.length));
   const maTrendLong = sma20 > sma80 ? 'bullish' as const : 'bearish' as const;
 
   const { support, resistance } = calculateSupportResistance(prices, 20);
@@ -327,7 +328,17 @@ export function analyzeAsset(asset: Asset): QuantAnalysisResult {
   let fundamentalScore = 0;
   let fundamentalDetail = '';
 
-  if (asset.type === 'stock') {
+  // En modo LIVE no existe fuente real de datos on-chain (whale/social) ni de
+  // ratios fundamentales en tiempo real, así que este factor se neutraliza para
+  // no contaminar el veredicto con datos inventados.
+  const isLiveMode = asset.dataMode === 'live';
+
+  if (isLiveMode) {
+    fundamentalScore = 0;
+    fundamentalDetail = asset.type === 'stock'
+      ? `Valuación fundamental no disponible en modo Live (sin fuente de ratios en tiempo real). El veredicto se basa en el análisis técnico y el sentimiento de noticias reales.`
+      : `Datos on-chain (flujo de ballenas / volumen social) no disponibles en modo Live por falta de una API real. El veredicto se basa en el análisis técnico y el sentimiento de noticias reales.`;
+  } else if (asset.type === 'stock') {
     const pe = asset.peRatio || 50;
     if (pe < 20) {
       fundamentalScore = 1.0;

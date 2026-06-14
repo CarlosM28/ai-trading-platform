@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { useTrading } from '../context/TradingContext';
-import { calculateRSI, calculateSMA, calculateMACD, calculateSupportResistance, calculateBollingerBands, calculateFibonacciLevels } from '../utils/indicators';
+import { calculateRSI, calculateSMA, calculateMACD, calculateSupportResistance, calculateBollingerBands, calculateFibonacciLevels, resolveRSI, resolveMACD, resolveSMA } from '../utils/indicators';
 import { TrendingUp, TrendingDown, DollarSign } from 'lucide-react';
 
 export const MarketChart: React.FC = () => {
@@ -164,9 +164,11 @@ export const MarketChart: React.FC = () => {
     };
   }, [points, minPrice, maxPrice, smaFastPoints, smaSlowPoints, bbUpperPoints, bbLowerPoints]);
 
-  // Calcular métricas secundarias en pantalla
-  const rsiValue = useMemo(() => calculateRSI(prices, 14), [prices]);
-  const macdData = useMemo(() => calculateMACD(prices), [prices]);
+  // Calcular métricas secundarias en pantalla.
+  // RSI y MACD usan el accesor unificado: valor real de TradingView en Live, local
+  // si no, igual que el motor de análisis y los bots (evita discrepancias).
+  const rsiValue = useMemo(() => asset ? resolveRSI(asset) : calculateRSI(prices, 14), [asset, prices]);
+  const macdData = useMemo(() => asset ? resolveMACD(asset) : calculateMACD(prices), [asset, prices]);
   const srShort = useMemo(() => calculateSupportResistance(prices, 20), [prices]);
   const srLong = useMemo(() => calculateSupportResistance(prices, 80), [prices]);
   const bbData = useMemo(() => calculateBollingerBands(prices, 20), [prices]);
@@ -483,8 +485,8 @@ export const MarketChart: React.FC = () => {
           <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '4px' }}>Tendencia Medio/Largo Plazo</div>
           <div style={{ fontSize: '1rem', fontWeight: 700 }}>
             {(() => {
-              const sma20 = calculateSMA(prices, 20);
-              const sma80 = calculateSMA(prices, Math.min(80, prices.length));
+              const sma20 = asset ? resolveSMA(asset, 20) : calculateSMA(prices, 20);
+              const sma80 = asset ? resolveSMA(asset, Math.min(80, prices.length)) : calculateSMA(prices, Math.min(80, prices.length));
               return sma20 > sma80 ? (
                 <span style={{ color: 'var(--color-buy)' }}>Alcista (20/80)</span>
               ) : (

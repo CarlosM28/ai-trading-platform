@@ -8,7 +8,8 @@ import {
   Settings as SettingsIcon,
   Activity,
   Clock,
-  Sparkles
+  Sparkles,
+  LineChart
 } from 'lucide-react';
 
 export const Sidebar: React.FC = () => {
@@ -19,6 +20,7 @@ export const Sidebar: React.FC = () => {
     { id: 'bots', label: 'Bots y Consola', icon: Bot },
     { id: 'portfolio', label: 'Cartera e Historial', icon: Wallet },
     { id: 'recommendations', label: 'Alertas y Recomendaciones', icon: TrendingUp },
+    { id: 'backtesting', label: 'Backtesting', icon: LineChart },
     { id: 'history_analysis', label: 'Análisis 8 Años', icon: Clock },
     { id: 'future_trends', label: 'Proyecciones de Futuro', icon: Sparkles },
     { id: 'settings', label: 'Configuración', icon: SettingsIcon },

@@ -1,6 +1,14 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { type Asset, type NewsEvent, generateInitialAssets, generateRandomNews, INITIAL_ASSETS_DATA } from '../utils/marketSimulator';
-import { calculateRSI, calculateMACD, calculateSMA, calculateSupportResistance } from '../utils/indicators';
+import {
+  evaluateStrategySignal,
+  computePositionSizing,
+  type BotConfig,
+  type BotPosition,
+} from '../core/strategyEngine';
+
+// Re-exportados para los componentes que ya importan estos tipos desde el contexto
+export type { BotConfig, BotPosition };
 import { externalAssetsPool } from '../utils/externalAssets';
 import {
   fetchBinanceAccount,
@@ -9,24 +17,7 @@ import {
   fetchAlpacaPositions,
   executeAlpacaOrder
 } from '../utils/apiSync';
-
-export interface BotConfig {
-  id: string;
-  name: string;
-  strategyType: 'rsi' | 'macd' | 'ma_crossover' | 'fundamental' | 'consensus';
-  isActive: boolean;
-  tradeSizeUsd: number;
-  description: string;
-  params: {
-    rsiOversold: number;
-    rsiOverbought: number;
-    maFast: number;
-    maSlow: number;
-    minSentimentScore: number;
-    consensusThreshold?: number;
-    activeStrategies?: string[];
-  };
-}
+import { classifyNewsSentiment } from '../utils/sentimentLLM';
 
 export interface Transaction {
   id: string;
@@ -65,7 +56,26 @@ export interface AppApiConfig {
   rapidApiKey?: string;
   rapidApiHost?: string;
   rapidApiConnected?: boolean;
+  anthropicApiKey?: string;
+  anthropicConnected?: boolean;
 }
+
+// Reglas de gestión de riesgo a nivel cartera (aplican a todos los bots en vivo)
+export interface RiskConfig {
+  maxConcurrentPositions: number;   // 0 = sin límite
+  dailyLossLimitPct: number;        // 0 = desactivado. Pausa nuevas entradas si la cartera cae este % en el día
+  trailingStopEnabled: boolean;     // el stop-loss sube con el precio para asegurar ganancias
+  partialTakeProfitEnabled: boolean;// vende una parte en el TP y deja correr el resto
+  partialTakeProfitPct: number;     // % de la posición a cerrar en el TP parcial (1–99)
+}
+
+const defaultRiskConfig: RiskConfig = {
+  maxConcurrentPositions: 5,
+  dailyLossLimitPct: 5,
+  trailingStopEnabled: false,
+  partialTakeProfitEnabled: false,
+  partialTakeProfitPct: 50,
+};
 
 interface TradingContextType {
   activeTab: string;
@@ -77,6 +87,7 @@ interface TradingContextType {
   logs: LogEntry[];
   transactions: Transaction[];
   bots: BotConfig[];
+  botPositions: BotPosition[];
   toggleBot: (id: string) => void;
   updateBotParams: (id: string, updates: Partial<BotConfig>) => void;
   balance: number;
@@ -88,8 +99,13 @@ interface TradingContextType {
   triggerManualOrder: (symbol: string, type: 'BUY' | 'SELL', amountUsd: number) => void;
   apiConfig: AppApiConfig;
   setApiConfig: React.Dispatch<React.SetStateAction<AppApiConfig>>;
+  riskConfig: RiskConfig;
+  setRiskConfig: React.Dispatch<React.SetStateAction<RiskConfig>>;
+  tradingHalted: boolean;
   isLoading: boolean;
   isApiLive: boolean;
+  dataMode: 'live' | 'simulation';
+  setDataMode: (mode: 'live' | 'simulation') => void;
   timeframe: '1m' | '1h' | '4h' | '1D' | '5D' | '1M' | '6M' | '1Y';
   changeTimeframe: (tf: '1m' | '1h' | '4h' | '1D' | '5D' | '1M' | '6M' | '1Y') => void;
   realNews: NewsEvent[];
@@ -427,12 +443,41 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [activeTab, setActiveTab] = useState('dashboard');
   const [activeAssetId, setActiveAssetId] = useState('btc');
   const [simSpeed, setSimSpeed] = useState(3000); // 3s por defecto
+
+  // Modo de datos: 'live' = solo datos reales (sin noticias mock ni historial inventado);
+  // 'simulation' = sandbox autocontenido para probar estrategias. Por defecto Simulación.
+  const [dataMode, setDataModeState] = useState<'live' | 'simulation'>(() => {
+    try {
+      const saved = localStorage.getItem('ai_trading_platform_data_mode');
+      if (saved === 'live' || saved === 'simulation') return saved;
+    } catch (e) {
+      console.error('Error reading dataMode from localStorage', e);
+    }
+    return 'simulation';
+  });
+  const dataModeRef = useRef(dataMode);
+  useEffect(() => { dataModeRef.current = dataMode; }, [dataMode]);
   const [timeframe, setTimeframe] = useState<'1m' | '1h' | '4h' | '1D' | '5D' | '1M' | '6M' | '1Y'>('1m');
   const [realNews, setRealNews] = useState<NewsEvent[]>([]);
   const [isLoadingRealNews, setIsLoadingRealNews] = useState<boolean>(false);
 
   const changeTimeframe = (tf: '1m' | '1h' | '4h' | '1D' | '5D' | '1M' | '6M' | '1Y') => {
     setTimeframe(tf);
+  };
+
+  const setDataMode = (mode: 'live' | 'simulation') => {
+    setDataModeState(mode);
+    try {
+      localStorage.setItem('ai_trading_platform_data_mode', mode);
+    } catch (e) {
+      console.error('Error saving dataMode to localStorage', e);
+    }
+    addLog(
+      mode === 'live'
+        ? 'Modo LIVE activado: solo datos reales. Sin noticias simuladas ni historial inventado; los activos sin datos reales quedan excluidos.'
+        : 'Modo SIMULACIÓN activado: sandbox autocontenido con noticias y datos simulados para probar estrategias.',
+      mode === 'live' ? 'info' : 'warning'
+    );
   };
 
   const lastPeriodRef = useRef(getCurrentPeriodValue('1m'));
@@ -486,6 +531,8 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       rapidApiKey: '',
       rapidApiHost: 'twitter-api45.p.rapidapi.com',
       rapidApiConnected: false,
+      anthropicApiKey: '',
+      anthropicConnected: false,
     };
   });
 
@@ -493,6 +540,29 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
   useEffect(() => {
     localStorage.setItem('ai_trading_platform_api_config', JSON.stringify(apiConfig));
   }, [apiConfig]);
+
+  // Reglas de gestión de riesgo a nivel cartera (persistidas)
+  const [riskConfig, setRiskConfig] = useState<RiskConfig>(() => {
+    try {
+      const saved = localStorage.getItem('ai_trading_platform_risk_config');
+      if (saved) return { ...defaultRiskConfig, ...JSON.parse(saved) };
+    } catch (e) {
+      console.error('Error leyendo riskConfig de localStorage', e);
+    }
+    return defaultRiskConfig;
+  });
+  useEffect(() => {
+    localStorage.setItem('ai_trading_platform_risk_config', JSON.stringify(riskConfig));
+  }, [riskConfig]);
+  const riskConfigRef = useRef(riskConfig);
+  useEffect(() => { riskConfigRef.current = riskConfig; }, [riskConfig]);
+
+  // Estado de pausa por límite de pérdida diaria
+  const [tradingHalted, setTradingHalted] = useState(false);
+  const tradingHaltedRef = useRef(false);
+  // Seguimiento de la pérdida diaria
+  const dayStartEquityRef = useRef(0);
+  const dayKeyRef = useRef('');
 
   // Bots de Trading Autónomos
   const [bots, setBots] = useState<BotConfig[]>([
@@ -509,6 +579,11 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
         maFast: 10,
         maSlow: 30,
         minSentimentScore: 0,
+        riskPercent: 1.5,
+        atrStopMultiplier: 2,
+        riskRewardRatio: 2,
+        cooldownCandles: 3,
+        maxAssetExposurePercent: 25,
       },
     },
     {
@@ -524,6 +599,11 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
         maFast: 12,
         maSlow: 26,
         minSentimentScore: 0,
+        riskPercent: 2,
+        atrStopMultiplier: 2,
+        riskRewardRatio: 2,
+        cooldownCandles: 2,
+        maxAssetExposurePercent: 25,
       },
     },
     {
@@ -539,6 +619,11 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
         maFast: 10,
         maSlow: 30,
         minSentimentScore: 0,
+        riskPercent: 1.5,
+        atrStopMultiplier: 2.5,
+        riskRewardRatio: 2.5,
+        cooldownCandles: 4,
+        maxAssetExposurePercent: 30,
       },
     },
     {
@@ -554,6 +639,11 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
         maFast: 10,
         maSlow: 30,
         minSentimentScore: 0.35,
+        riskPercent: 1,
+        atrStopMultiplier: 3,
+        riskRewardRatio: 2,
+        cooldownCandles: 5,
+        maxAssetExposurePercent: 20,
       },
     },
     {
@@ -571,9 +661,17 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
         minSentimentScore: 0.25,
         consensusThreshold: 3,
         activeStrategies: ['rsi', 'macd', 'ma_crossover', 'fundamental'],
+        riskPercent: 1.5,
+        atrStopMultiplier: 2,
+        riskRewardRatio: 2.5,
+        cooldownCandles: 3,
+        maxAssetExposurePercent: 25,
       },
     },
   ]);
+
+  // Posiciones abiertas por los bots (gestión de stop-loss / take-profit)
+  const [botPositions, setBotPositions] = useState<BotPosition[]>([]);
 
   // Usamos referencias para acceder a los valores más recientes dentro del bucle de simulación sin reiniciarlo
   const assetsRef = useRef(assets);
@@ -581,18 +679,26 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const holdingsRef = useRef(holdings);
   const botsRef = useRef(bots);
   const newsRef = useRef(news);
+  const botPositionsRef = useRef(botPositions);
+  // Contador monótono de velas cerradas (para cooldown y antigüedad de posiciones)
+  const candleCountRef = useRef(0);
+  // Última vela en la que cada bot cerró posición en un activo: clave `${botId}:${symbol}`
+  const cooldownRef = useRef<Record<string, number>>({});
 
   useEffect(() => { assetsRef.current = assets; }, [assets]);
   useEffect(() => { balanceRef.current = balance; }, [balance]);
   useEffect(() => { holdingsRef.current = holdings; }, [holdings]);
   useEffect(() => { botsRef.current = bots; }, [bots]);
   useEffect(() => { newsRef.current = news; }, [news]);
+  useEffect(() => { botPositionsRef.current = botPositions; }, [botPositions]);
   const isApiLiveRef = useRef(isApiLive);
   useEffect(() => { isApiLiveRef.current = isApiLive; }, [isApiLive]);
 
   const loadMarketData = async (tf: '1m' | '1h' | '4h' | '1D' | '5D' | '1M' | '6M' | '1Y' = '1m') => {
     setIsLoading(true);
-    
+
+    const mode = dataModeRef.current; // Modo activo al iniciar la carga
+
     // Configurar parámetros de intervalos y rangos
     let cryptoInterval = '1m';
     let cryptoLimit = 100;
@@ -733,6 +839,8 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
           let priceHistory = asset.priceHistory;
           let changePercent = binanceTicker?.changePercent || asset.changePercent;
 
+          const gotRealData = (fetched && fetched.priceHistory.length >= 2) || !!binanceTicker;
+
           if (fetched && fetched.priceHistory.length >= 2) {
             priceHistory = [...fetched.priceHistory];
             if (binanceTicker) {
@@ -743,13 +851,18 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
               changePercent = ((lastPrice - prevPrice) / prevPrice) * 100;
             }
           }
-          
+
           return {
             ...asset,
             price: lastPrice,
             priceHistory,
             changePercent,
             realBasePrice: lastPrice,
+            hasLiveData: gotRealData,
+            dataMode: mode,
+            // En Live no usamos el sentimiento hardcodeado: parte neutral y se llena
+            // con noticias reales del activo seleccionado.
+            sentimentScore: mode === 'live' ? 0 : asset.sentimentScore,
             tvRsi: tvData?.rsi,
             tvMacdHist: tvData?.macdHist,
             tvSma10: tvData?.sma10,
@@ -813,8 +926,10 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
           let lastPrice = tvData?.price || asset.price;
           let changePercent = tvData?.changePercent || asset.changePercent;
           let priceHistory: number[] = [];
+          let gotRealData = false;
 
           if (fetched && fetched.priceHistory.length >= 2) {
+            gotRealData = true;
             priceHistory = [...fetched.priceHistory];
             if (tvData) {
               priceHistory[priceHistory.length - 1] = tvData.price;
@@ -823,8 +938,14 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
               const prevPrice = priceHistory[priceHistory.length - 2];
               changePercent = ((lastPrice - prevPrice) / prevPrice) * 100;
             }
+          } else if (mode === 'live') {
+            // MODO LIVE: no inventamos historial. Si solo tenemos el precio puntual de
+            // TradingView lo conservamos como semilla mínima, pero el activo queda
+            // marcado "sin datos" (hasLiveData=false) y se excluye de bots y análisis.
+            priceHistory = tvData ? [tvData.price] : [...asset.priceHistory];
+            gotRealData = false;
           } else {
-            // Si Yahoo falló (ej: 429), generamos historial ficticio en base al precio actual y escalado al timeframe
+            // MODO SIMULACIÓN: generamos historial sintético escalado al timeframe.
             const generateHistoryLocal = (p: number, timeframeStr: string): number[] => {
               const hist: number[] = [];
               let tfVol = 0.001; // 1m
@@ -868,6 +989,9 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
             priceHistory,
             changePercent,
             realBasePrice: lastPrice,
+            hasLiveData: gotRealData,
+            dataMode: mode,
+            sentimentScore: mode === 'live' ? 0 : asset.sentimentScore,
             tvRsi: tvData?.rsi,
             tvMacdHist: tvData?.macdHist,
             tvSma10: tvData?.sma10,
@@ -897,11 +1021,11 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
     setIsLoading(false);
   };
 
-  // Carga inicial y recarga por cambio de timeframe
+  // Carga inicial y recarga por cambio de timeframe o de modo de datos
   useEffect(() => {
     lastPeriodRef.current = getCurrentPeriodValue(timeframe);
     loadMarketData(timeframe);
-  }, [timeframe]);
+  }, [timeframe, dataMode]);
 
   // Carga de noticias reales para el activo seleccionado (Google News RSS con Filtro Temporal + X/Twitter)
   useEffect(() => {
@@ -1045,6 +1169,27 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
         }
       }
 
+      // 2.5 Reclasificar el sentimiento con un LLM (Claude Haiku) si está configurado.
+      // Sustituye la heurística de palabras clave por una clasificación contextual
+      // (ironía, negaciones). Si falla, se conservan los scores por palabras clave.
+      if (apiConfig.anthropicConnected && apiConfig.anthropicApiKey && combinedNewsList.length > 0) {
+        try {
+          const scores = await classifyNewsSentiment(
+            combinedNewsList.map(n => ({ headline: n.headline, content: n.content })),
+            apiConfig.anthropicApiKey
+          );
+          combinedNewsList.forEach((n, i) => {
+            const s = scores[i];
+            if (typeof s === 'number') {
+              n.score = Number(s.toFixed(2));
+              n.impact = s > 0.15 ? 'positive' : s < -0.15 ? 'negative' : 'neutral';
+            }
+          });
+        } catch (err) {
+          console.warn('Clasificación de sentimiento con LLM falló; se usa la heurística de palabras clave.', err);
+        }
+      }
+
       // 3. Ordenar todo por fecha rawDate descendente
       combinedNewsList.sort((a, b) => {
         const dateA = a.rawDate ? new Date(a.rawDate).getTime() : 0;
@@ -1054,10 +1199,27 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
       setRealNews(combinedNewsList);
       setIsLoadingRealNews(false);
+
+      // MODO LIVE: derivar el sentimiento real del activo a partir de sus noticias
+      // (Google News + X). Sustituye al sentimiento hardcodeado para que el bot
+      // fundamental y el factor "Sentimiento" del análisis usen señales reales.
+      if (dataModeRef.current === 'live') {
+        const scored = combinedNewsList.filter(n => n.score !== 0);
+        if (scored.length > 0) {
+          // Media de los scores, amplificada suavemente y acotada a [-1, 1].
+          const avg = scored.reduce((s, n) => s + n.score, 0) / scored.length;
+          const aggregated = Math.max(-1, Math.min(1, avg * 1.8));
+          setAssets(prev => prev.map(a =>
+            a.symbol === activeAsset.symbol
+              ? { ...a, sentimentScore: Number(aggregated.toFixed(2)) }
+              : a
+          ));
+        }
+      }
     };
 
     fetchRealNewsForAsset();
-  }, [activeAssetId, assets.length, apiConfig.rapidApiConnected, apiConfig.rapidApiKey, apiConfig.rapidApiHost]);
+  }, [activeAssetId, assets.length, apiConfig.rapidApiConnected, apiConfig.rapidApiKey, apiConfig.rapidApiHost, apiConfig.anthropicConnected, apiConfig.anthropicApiKey, dataMode]);
 
   useEffect(() => {
     // Generar historial de cartera inicial
@@ -1136,7 +1298,19 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
     setHoldings(clearedHoldings);
     setTransactions([]);
-    
+
+    // Limpiar posiciones abiertas de los bots y sus cooldowns
+    botPositionsRef.current = [];
+    setBotPositions([]);
+    cooldownRef.current = {};
+    candleCountRef.current = 0;
+
+    // Reiniciar la gestión de riesgo diaria
+    tradingHaltedRef.current = false;
+    setTradingHalted(false);
+    dayStartEquityRef.current = 0;
+    dayKeyRef.current = '';
+
     const now = new Date();
     const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     setPortfolioValueHistory([{ timestamp: timeStr, totalValue: initialBalance }]);
@@ -1337,6 +1511,118 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
     executeTrade('Usuario', symbol, type, asset.price, amountUsd);
   };
 
+  // ── Gestión de posiciones de bots (mutación síncrona del ref + estado para UI) ──
+  const addBotPosition = (pos: BotPosition) => {
+    botPositionsRef.current = [...botPositionsRef.current, pos];
+    setBotPositions(botPositionsRef.current);
+  };
+
+  const removeBotPosition = (id: string) => {
+    botPositionsRef.current = botPositionsRef.current.filter(p => p.id !== id);
+    setBotPositions(botPositionsRef.current);
+  };
+
+  const updateBotPosition = (id: string, patch: Partial<BotPosition>) => {
+    botPositionsRef.current = botPositionsRef.current.map(p => (p.id === id ? { ...p, ...patch } : p));
+    setBotPositions(botPositionsRef.current);
+  };
+
+  // Take-profit parcial: vende una fracción de la posición, mueve el stop a
+  // break-even y extiende el objetivo para dejar correr el resto ("runner").
+  const partialCloseBotPosition = async (pos: BotPosition, price: number, pct: number) => {
+    const closeAmount = pos.amount * (pct / 100);
+    const ok = await executeTrade(pos.botName, pos.assetSymbol, 'SELL', price, closeAmount * price);
+    if (!ok) return;
+
+    const remaining = pos.amount - closeAmount;
+    const realizedPnl = (price - pos.entryPrice) * closeAmount;
+    const tpDistance = pos.takeProfit - pos.entryPrice;
+
+    updateBotPosition(pos.id, {
+      amount: Number(remaining.toFixed(6)),
+      partialTaken: true,
+      stopLoss: Number(pos.entryPrice.toFixed(6)),                 // proteger a break-even
+      takeProfit: Number((pos.entryPrice + tpDistance * 2).toFixed(6)), // objetivo extendido
+    });
+
+    addLog(
+      `[${pos.botName}] TP PARCIAL en ${pos.assetSymbol}: vendido ${pct}% @ $${price.toLocaleString()} (+$${realizedPnl.toFixed(2)}). Stop a break-even, dejando correr el resto.`,
+      'sell'
+    );
+  };
+
+  // Abre una posición dimensionada por riesgo: el tamaño se calcula para que,
+  // si salta el stop-loss (a distancia ATR * multiplicador), la pérdida sea
+  // aproximadamente riskPercent del valor de la cartera.
+  const openBotPosition = async (
+    bot: BotConfig,
+    asset: Asset,
+    price: number,
+    portfolioValue: number,
+    availableBalance: number
+  ): Promise<number> => {
+    // Dimensionamiento por riesgo: misma matemática que usa el backtester.
+    const riskPercent = bot.params.riskPercent ?? 1.5;
+    const currentExposureUsd = (holdingsRef.current[asset.symbol] || 0) * price;
+    const sizing = computePositionSizing(
+      bot,
+      asset.priceHistory,
+      price,
+      portfolioValue,
+      availableBalance,
+      currentExposureUsd
+    );
+
+    if (!sizing) {
+      addLog(`[${bot.name}] Señal de compra en ${asset.symbol} descartada: tamaño por riesgo demasiado pequeño o exposición/efectivo insuficiente.`, 'info');
+      return 0;
+    }
+
+    const { amountUsd, amount, stopLoss, takeProfit, stopDistance } = sizing;
+
+    const ok = await executeTrade(bot.name, asset.symbol, 'BUY', price, amountUsd);
+    if (!ok) return 0;
+
+    addBotPosition({
+      id: Math.random().toString(36).substring(2, 9),
+      botId: bot.id,
+      botName: bot.name,
+      assetSymbol: asset.symbol,
+      entryPrice: price,
+      amount: Number(amount.toFixed(6)),
+      entryUsd: Number(amountUsd.toFixed(2)),
+      stopLoss,
+      takeProfit,
+      openedAtCandle: candleCountRef.current,
+      highWaterPrice: price,
+      trailDistance: stopDistance,
+      partialTaken: false,
+    });
+
+    addLog(
+      `[${bot.name}] Posición ABIERTA en ${asset.symbol}: $${amountUsd.toFixed(0)} @ $${price.toLocaleString()} | SL $${stopLoss.toLocaleString()} (-${((stopDistance / price) * 100).toFixed(1)}%) | TP $${takeProfit.toLocaleString()} (+${(((takeProfit - price) / price) * 100).toFixed(1)}%) | Riesgo ${riskPercent}% de cartera.`,
+      'buy'
+    );
+
+    return amountUsd;
+  };
+
+  // Cierra una posición existente vendiendo exactamente su cantidad.
+  const closeBotPosition = async (pos: BotPosition, price: number, reason: string) => {
+    const ok = await executeTrade(pos.botName, pos.assetSymbol, 'SELL', price, pos.amount * price);
+    if (!ok) return;
+
+    removeBotPosition(pos.id);
+    cooldownRef.current[`${pos.botId}:${pos.assetSymbol}`] = candleCountRef.current;
+
+    const pnl = (price - pos.entryPrice) * pos.amount;
+    const pnlPct = ((price - pos.entryPrice) / pos.entryPrice) * 100;
+    addLog(
+      `[${pos.botName}] Posición CERRADA en ${pos.assetSymbol} por ${reason} @ $${price.toLocaleString()} | P&L: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)} (${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%).`,
+      pnl >= 0 ? 'sell' : 'warning'
+    );
+  };
+
   // LOOP DE SIMULACIÓN Y ESTRATEGIAS DE BOTS
   useEffect(() => {
     const runSimulationTick = async () => {
@@ -1344,7 +1630,10 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       const currentAssets = assetsRef.current;
       if (currentAssets.length === 0) return;
 
-      const newNewsEvent = generateRandomNews(currentAssets);
+      // En modo LIVE no se inyectan noticias simuladas (el feed usa noticias reales).
+      const newNewsEvent = dataModeRef.current === 'simulation'
+        ? generateRandomNews(currentAssets)
+        : null;
       let updatedNewsList = newsRef.current;
       if (newNewsEvent) {
         updatedNewsList = [newNewsEvent, ...newsRef.current].slice(0, 15); // Guardar últimos 15 eventos de noticias
@@ -1360,6 +1649,7 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       const isNewPeriod = currentPeriodVal !== lastPeriodRef.current;
       if (isNewPeriod) {
         lastPeriodRef.current = currentPeriodVal;
+        candleCountRef.current += 1; // Contador monótono para cooldown y antigüedad de posiciones
       }
 
       // Obtener precios de criptomonedas directamente de Binance en tiempo real (evita discrepancias)
@@ -1389,12 +1679,15 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
         }
       }
 
-      // Obtener precios de acciones desde TradingView Scanner
-      if (activeStocks.length > 0) {
+      // Obtener indicadores en vivo desde TradingView Scanner para TODOS los activos
+      // (acciones y cripto). Para cripto el PRECIO seguirá viniendo de Binance, pero
+      // así mantenemos frescos RSI/MACD/SMA reales también en cripto.
+      const tvSymbols = [...activeCryptos, ...activeStocks];
+      if (tvSymbols.length > 0) {
         try {
-          livePrices = await fetchTradingViewPrices(activeStocks, timeframe);
+          livePrices = await fetchTradingViewPrices(tvSymbols, timeframe);
         } catch (err) {
-          console.warn('Failed fetching live stock prices from TradingView Scanner in tick:', err);
+          console.warn('Failed fetching live indicators from TradingView Scanner in tick:', err);
         }
       }
 
@@ -1426,33 +1719,35 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
         let newApiPrice = 0;
         let newApiChangePercent = 0;
 
-        if (tvData) {
-          hasNewApiPrice = true;
-          newApiPrice = tvData.price;
-          newApiChangePercent = tvData.changePercent;
-        } else if (liveCrypto) {
+        // PRECIO: para cripto preferimos Binance (más preciso y en tiempo real);
+        // para acciones, TradingView. La fuente del precio es independiente de los
+        // indicadores.
+        if (liveCrypto) {
           hasNewApiPrice = true;
           newApiPrice = liveCrypto.price;
           newApiChangePercent = liveCrypto.changePercent;
+        } else if (tvData) {
+          hasNewApiPrice = true;
+          newApiPrice = tvData.price;
+          newApiChangePercent = tvData.changePercent;
+        }
+
+        // INDICADORES: se refrescan siempre que TradingView los devuelva, sin importar
+        // de dónde venga el precio (mantiene RSI/MACD/SMA frescos también en cripto).
+        if (tvData) {
+          tvRsi = tvData.rsi;
+          tvMacdHist = tvData.macdHist;
+          tvSma10 = tvData.sma10;
+          tvSma20 = tvData.sma20;
+          tvSma30 = tvData.sma30;
+          tvSma50 = tvData.sma50;
+          tvSma100 = tvData.sma100;
         }
 
         if (hasNewApiPrice) {
           // Si hay precio nuevo de la API, nos sincronizamos
           finalPrice = newApiPrice;
           updatedRealBasePrice = newApiPrice;
-          
-          if (tvData) {
-            tvRsi = tvData.rsi;
-            tvMacdHist = tvData.macdHist;
-            tvSma10 = tvData.sma10;
-            tvSma20 = tvData.sma20;
-            tvSma30 = tvData.sma30;
-            tvSma50 = tvData.sma50;
-            tvSma100 = tvData.sma100;
-          }
-        } else {
-          // Si no hay precio nuevo de la API (estático, cacheado o cerrado), dejamos el precio simulado fluctuante
-          // y mantenemos el realBasePrice actual.
         }
 
         const history = [...asset.priceHistory];
@@ -1485,6 +1780,9 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
           priceHistory: history,
           changePercent: finalChangePct,
           realBasePrice: updatedRealBasePrice,
+          dataMode: dataModeRef.current,
+          // Si recibimos precio real este tick, el activo pasa a tener datos en vivo.
+          hasLiveData: hasNewApiPrice ? true : asset.hasLiveData,
           tvRsi,
           tvMacdHist,
           tvSma10,
@@ -1497,268 +1795,134 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
       setAssets(nextAssets);
 
-      // 3. Ejecutar Lógica de los Bots Activos
-      const activeBots = botsRef.current.filter(b => b.isActive);
-      
-      activeBots.forEach(bot => {
-        // Cada bot elige un activo aleatorio o los analiza secuencialmente. Para este simulador en tiempo real,
-        // cada bot analiza un activo que cumpla con su criterio o revisa el activo activo seleccionado en pantalla
-        // para dar retroalimentación visual al usuario en vivo. 
-        // Para mayor realismo, cada bot analiza secuencialmente todos los activos.
-        
-        nextAssets.forEach(asset => {
-          // Si el activo tiene deshabilitada la operacion de los bots, se ignora
-          if (asset.allowedForBots === false) return;
+      // 3. Gestión de posiciones y lógica de bots
+      //    - El stop-loss / take-profit se revisa en CADA tick (protege la posición
+      //      aunque el bot se apague o el precio se mueva dentro de la vela).
+      //    - Las señales de ENTRADA solo se evalúan al cierre de vela (isNewPeriod),
+      //      lo que evita el "repintado": un cruce que aparece y desaparece dentro
+      //      del mismo minuto ya no dispara compras/ventas espurias.
 
-          const prices = asset.priceHistory;
-          if (prices.length < 35) return; // Esperar a tener suficientes precios
+      // Valor actual de la cartera y efectivo disponible local (se descuenta a medida
+      // que abrimos posiciones en este mismo tick, evitando gastar el saldo dos veces).
+      const portfolioValueNow = balanceRef.current + nextAssets.reduce(
+        (sum, a) => sum + (holdingsRef.current[a.symbol] || 0) * a.price,
+        0
+      );
+      let availableBalanceLocal = balanceRef.current;
+      const rc = riskConfigRef.current;
 
-          const currentPrice = asset.price;
-          const currentHolding = holdingsRef.current[asset.symbol] || 0;
+      // 3·0 Gestión de riesgo de cartera: límite de pérdida diaria.
+      const dayKey = new Date().toDateString();
+      if (dayKeyRef.current !== dayKey) {
+        // Nuevo día: fijar la equity de referencia y levantar la pausa.
+        dayKeyRef.current = dayKey;
+        dayStartEquityRef.current = portfolioValueNow;
+        if (tradingHaltedRef.current) {
+          tradingHaltedRef.current = false;
+          setTradingHalted(false);
+          addLog('Nuevo día: el límite de pérdida diaria se ha reiniciado. Bots reactivados.', 'info');
+        }
+      }
+      if (dayStartEquityRef.current <= 0) dayStartEquityRef.current = portfolioValueNow;
+      const dailyPnlPct = ((portfolioValueNow - dayStartEquityRef.current) / dayStartEquityRef.current) * 100;
+      if (rc.dailyLossLimitPct > 0 && dailyPnlPct <= -rc.dailyLossLimitPct && !tradingHaltedRef.current) {
+        tradingHaltedRef.current = true;
+        setTradingHalted(true);
+        addLog(`⛔ LÍMITE DE PÉRDIDA DIARIA alcanzado (${dailyPnlPct.toFixed(1)}%). Bots pausados para nuevas entradas hasta mañana. Las posiciones abiertas siguen gestionándose con su SL/TP.`, 'warning');
+      }
 
-          // Calcular soporte y resistencia locales
-          const { support, resistance } = calculateSupportResistance(prices, 20);
-          const isNearSupport = currentPrice <= support * 1.02; // Dentro de 2.0% del soporte
-          const isNearResistance = currentPrice >= resistance * 0.98; // Dentro de 2.0% de la resistencia
+      // 3a. Gestión de posiciones abiertas en CADA tick: SL/TP, take-profit parcial
+      //     y trailing stop (subir el stop si el precio sube).
+      for (const pos of [...botPositionsRef.current]) {
+        const asset = nextAssets.find(a => a.symbol === pos.assetSymbol);
+        if (!asset) continue;
+        const price = asset.price;
 
-          // --- ESTRATEGIA RSI ---
-          if (bot.strategyType === 'rsi') {
-            const rsi = calculateRSI(prices, 14);
-            const oversoldLimit = bot.params.rsiOversold;
-            const overboughtLimit = bot.params.rsiOverbought;
+        // Stop-loss
+        if (price <= pos.stopLoss) {
+          await closeBotPosition(pos, price, 'STOP-LOSS 🛑');
+          continue;
+        }
 
-            if (rsi < oversoldLimit) {
-              if (isNearSupport) {
-                // Condición alcista: RSI en zona de sobreventa -> COMPRAR
-                executeTrade(bot.name, asset.symbol, 'BUY', currentPrice, bot.tradeSizeUsd);
-              } else {
-                addLog(`[${bot.name}] Señal de compra en ${asset.symbol} omitida: precio fuera de soporte (Precio: $${currentPrice.toLocaleString()}, Soporte: $${support.toLocaleString()}).`, 'info');
+        // Take-profit (parcial o total)
+        if (price >= pos.takeProfit) {
+          if (rc.partialTakeProfitEnabled && !pos.partialTaken && rc.partialTakeProfitPct > 0 && rc.partialTakeProfitPct < 100) {
+            await partialCloseBotPosition(pos, price, rc.partialTakeProfitPct);
+          } else {
+            await closeBotPosition(pos, price, 'TAKE-PROFIT 🎯');
+          }
+          continue;
+        }
+
+        // Trailing stop: el stop sube con el precio manteniendo la distancia original.
+        if (rc.trailingStopEnabled) {
+          const high = Math.max(pos.highWaterPrice ?? pos.entryPrice, price);
+          const trailDist = pos.trailDistance ?? (pos.entryPrice - pos.stopLoss);
+          const newStop = high - trailDist;
+          if (newStop > pos.stopLoss) {
+            updateBotPosition(pos.id, { stopLoss: Number(newStop.toFixed(6)), highWaterPrice: high });
+          } else if (high > (pos.highWaterPrice ?? 0)) {
+            updateBotPosition(pos.id, { highWaterPrice: high });
+          }
+        }
+      }
+
+      // 3b. Señales de entrada/salida SOLO al cierre de vela
+      if (isNewPeriod) {
+        const activeBots = botsRef.current.filter(b => b.isActive);
+
+        for (const bot of activeBots) {
+          for (const asset of nextAssets) {
+            // Si el activo tiene deshabilitada la operación de los bots, se ignora
+            if (asset.allowedForBots === false) continue;
+            // En modo LIVE, no operar sobre activos sin datos reales (nunca inventados)
+            if (dataModeRef.current === 'live' && asset.hasLiveData === false) continue;
+
+            const prices = asset.priceHistory;
+            if (prices.length < 35) continue; // Esperar a tener suficiente historial
+
+            const currentPrice = asset.price;
+            const existingPos = botPositionsRef.current.find(
+              p => p.botId === bot.id && p.assetSymbol === asset.symbol
+            );
+
+            const { signal, reason } = evaluateStrategySignal(bot, asset, prices, currentPrice, newNewsEvent);
+
+            if (signal === 'BUY') {
+              // Posición única: si el bot ya tiene posición en este activo, no promediar
+              if (existingPos) continue;
+
+              // Gestión de riesgo de cartera: pausa por pérdida diaria
+              if (tradingHaltedRef.current) continue;
+
+              // Gestión de riesgo de cartera: tope de posiciones simultáneas
+              const maxPos = rc.maxConcurrentPositions;
+              if (maxPos > 0 && botPositionsRef.current.length >= maxPos) {
+                continue;
               }
-            } else if (rsi > overboughtLimit && currentHolding > 0) {
-              if (isNearResistance) {
-                // Condición bajista: RSI sobrecomprado -> VENDER
-                executeTrade(bot.name, asset.symbol, 'SELL', currentPrice, bot.tradeSizeUsd);
-              } else {
-                addLog(`[${bot.name}] Señal de venta en ${asset.symbol} omitida: precio fuera de resistencia (Precio: $${currentPrice.toLocaleString()}, Resistencia: $${resistance.toLocaleString()}).`, 'info');
+
+              // Cooldown: esperar N velas tras cerrar la última posición en este activo
+              const cdKey = `${bot.id}:${asset.symbol}`;
+              const lastClosed = cooldownRef.current[cdKey];
+              const cooldown = bot.params.cooldownCandles ?? 3;
+              if (lastClosed !== undefined && candleCountRef.current - lastClosed < cooldown) {
+                continue;
+              }
+
+              addLog(`[${bot.name}] Señal de COMPRA en ${asset.symbol} por ${reason}. Dimensionando por riesgo...`, 'info');
+              const spent = await openBotPosition(bot, asset, currentPrice, portfolioValueNow, availableBalanceLocal);
+              if (spent > 0) {
+                availableBalanceLocal = Math.max(0, availableBalanceLocal - spent);
+              }
+            } else if (signal === 'SELL') {
+              // Salida por estrategia (adicional al SL/TP). Solo cierra si hay posición abierta.
+              if (existingPos) {
+                await closeBotPosition(existingPos, currentPrice, `señal de salida (${reason})`);
               }
             }
           }
-
-          // --- ESTRATEGIA MACD ---
-          else if (bot.strategyType === 'macd') {
-            const macdData = calculateMACD(prices);
-            
-            // Crossover alcista: MACD cruza por encima de la señal (Histograma se vuelve positivo)
-            // Crossover bajista: MACD cruza por debajo de la señal (Histograma se vuelve negativo)
-            const prevPrices = prices.slice(0, -1);
-            const prevMacdData = calculateMACD(prevPrices);
-
-            const prevHist = prevMacdData.histogram;
-            const currHist = macdData.histogram;
-
-            if (prevHist < 0 && currHist > 0) {
-              if (isNearSupport) {
-                executeTrade(bot.name, asset.symbol, 'BUY', currentPrice, bot.tradeSizeUsd);
-              } else {
-                addLog(`[${bot.name}] Cruce alcista MACD en ${asset.symbol} omitido por no estar en zona de soporte.`, 'info');
-              }
-            } else if (prevHist > 0 && currHist < 0 && currentHolding > 0) {
-              if (isNearResistance) {
-                executeTrade(bot.name, asset.symbol, 'SELL', currentPrice, bot.tradeSizeUsd);
-              } else {
-                addLog(`[${bot.name}] Cruce bajista MACD en ${asset.symbol} omitido por no estar en zona de resistencia.`, 'info');
-              }
-            }
-          }
-
-          // --- ESTRATEGIA MEDIA CÓSMICA (CRUCE DE MEDIAS MÓVILES) ---
-          else if (bot.strategyType === 'ma_crossover') {
-            const fastPeriod = bot.params.maFast;
-            const slowPeriod = bot.params.maSlow;
-
-            const currFast = calculateSMA(prices, fastPeriod);
-            const currSlow = calculateSMA(prices, slowPeriod);
-
-            const prevPrices = prices.slice(0, -1);
-            const prevFast = calculateSMA(prevPrices, fastPeriod);
-            const prevSlow = calculateSMA(prevPrices, slowPeriod);
-
-            // Cruce Dorado (Golden Cross): Rápida cruza de abajo hacia arriba de la Lenta -> COMPRA
-            // Cruce de Muerte (Death Cross): Rápida cruza hacia abajo de la Lenta -> VENTA
-            if (prevFast < prevSlow && currFast > currSlow) {
-              if (isNearSupport) {
-                executeTrade(bot.name, asset.symbol, 'BUY', currentPrice, bot.tradeSizeUsd);
-              } else {
-                addLog(`[${bot.name}] Cruce Dorado en ${asset.symbol} omitido (precio fuera de soporte).`, 'info');
-              }
-            } else if (prevFast > prevSlow && currFast < currSlow && currentHolding > 0) {
-              if (isNearResistance) {
-                executeTrade(bot.name, asset.symbol, 'SELL', currentPrice, bot.tradeSizeUsd);
-              } else {
-                addLog(`[${bot.name}] Cruce de Muerte en ${asset.symbol} omitido (precio fuera de resistencia).`, 'info');
-              }
-            }
-          }
-
-          // --- ESTRATEGIA FUNDAMENTALISTA ---
-          else if (bot.strategyType === 'fundamental') {
-            const hasCurrentNews = newNewsEvent && newNewsEvent.assetSymbol === asset.symbol;
-            let shouldBuy = false;
-            let shouldSell = false;
-            let logReason = '';
-
-            if (hasCurrentNews) {
-              if (newNewsEvent.impact === 'positive') {
-                shouldBuy = true;
-                logReason = `noticia positiva de impacto inmediato: "${newNewsEvent.headline}"`;
-              } else if (newNewsEvent.impact === 'negative') {
-                shouldSell = true;
-                logReason = `noticia negativa de impacto inmediato: "${newNewsEvent.headline}"`;
-              }
-            } else {
-              const sentiment = asset.sentimentScore;
-              if (sentiment >= bot.params.minSentimentScore) {
-                shouldBuy = true;
-                logReason = `sentimiento acumulado positivo (${(sentiment * 100).toFixed(0)}%)`;
-              } else if (sentiment <= -bot.params.minSentimentScore) {
-                shouldSell = true;
-                logReason = `sentimiento acumulado negativo (${(sentiment * 100).toFixed(0)}%)`;
-              }
-            }
-
-            if (shouldBuy) {
-              if (isNearResistance) {
-                addLog(`[${bot.name}] Compra fundamental en ${asset.symbol} bloqueada por zona de resistencia (Precio: $${currentPrice.toLocaleString()}, Resistencia: $${resistance.toLocaleString()}).`, 'info');
-              } else {
-                if (asset.type === 'stock') {
-                  const pe = asset.peRatio || 50;
-                  if (pe < 40) {
-                    addLog(`[${bot.name}] Señal de compra en ${asset.symbol} por ${logReason} (P/E: ${pe}).`, 'info');
-                    executeTrade(bot.name, asset.symbol, 'BUY', currentPrice, bot.tradeSizeUsd);
-                  }
-                } else {
-                  const social = asset.socialVolume || 0;
-                  if (social > 4000) {
-                    addLog(`[${bot.name}] Señal de compra en ${asset.symbol} por ${logReason} (Vol. social: ${social}).`, 'info');
-                    executeTrade(bot.name, asset.symbol, 'BUY', currentPrice, bot.tradeSizeUsd);
-                  }
-                }
-              }
-            } else if (shouldSell && currentHolding > 0) {
-              if (isNearSupport) {
-                addLog(`[${bot.name}] Venta fundamental en ${asset.symbol} bloqueada por zona de soporte (Soporte en $${support.toLocaleString()}).`, 'info');
-              } else {
-                addLog(`[${bot.name}] Señal de venta en ${asset.symbol} por ${logReason}.`, 'info');
-                executeTrade(bot.name, asset.symbol, 'SELL', currentPrice, bot.tradeSizeUsd);
-              }
-            }
-          }
-
-          // --- ESTRATEGIA DE CONSENSO MULTI-FILTRO (FUSIÓN) ---
-          else if (bot.strategyType === 'consensus') {
-            const activeStrats = bot.params.activeStrategies || ['rsi', 'macd', 'ma_crossover', 'fundamental'];
-            const threshold = bot.params.consensusThreshold || 2;
-            
-            let buySignals = 0;
-            let sellSignals = 0;
-            let totalEvaluated = activeStrats.length;
-
-            if (totalEvaluated > 0) {
-              // 1. Evaluar RSI
-              if (activeStrats.includes('rsi')) {
-                const rsi = calculateRSI(prices, 14);
-                if (rsi < bot.params.rsiOversold) buySignals++;
-                else if (rsi > bot.params.rsiOverbought) sellSignals++;
-              }
-
-              // 2. Evaluar MACD
-              if (activeStrats.includes('macd')) {
-                const macdData = calculateMACD(prices);
-                const prevPrices = prices.slice(0, -1);
-                const prevMacdData = calculateMACD(prevPrices);
-                const prevHist = prevMacdData.histogram;
-                const currHist = macdData.histogram;
-
-                if (prevHist < 0 && currHist > 0) buySignals++;
-                else if (prevHist > 0 && currHist < 0) sellSignals++;
-              }
-
-              // 3. Evaluar Cruce de Medias
-              if (activeStrats.includes('ma_crossover')) {
-                const fastPeriod = bot.params.maFast;
-                const slowPeriod = bot.params.maSlow;
-                const currFast = calculateSMA(prices, fastPeriod);
-                const currSlow = calculateSMA(prices, slowPeriod);
-                const prevPrices = prices.slice(0, -1);
-                const prevFast = calculateSMA(prevPrices, fastPeriod);
-                const prevSlow = calculateSMA(prevPrices, slowPeriod);
-
-                if (prevFast < prevSlow && currFast > currSlow) buySignals++;
-                else if (prevFast > prevSlow && currFast < currSlow) sellSignals++;
-              }
-
-              // 4. Evaluar Sentimiento / Fundamental
-              if (activeStrats.includes('fundamental')) {
-                const hasCurrentNews = newNewsEvent && newNewsEvent.assetSymbol === asset.symbol;
-                let fundSignal = 0; // +1 compra, -1 venta
-                
-                if (hasCurrentNews) {
-                  if (newNewsEvent.impact === 'positive') fundSignal = 1;
-                  else if (newNewsEvent.impact === 'negative') fundSignal = -1;
-                } else {
-                  const sentiment = asset.sentimentScore;
-                  if (sentiment >= bot.params.minSentimentScore) fundSignal = 1;
-                  else if (sentiment <= -bot.params.minSentimentScore) fundSignal = -1;
-                }
-
-                if (fundSignal === 1) {
-                  if (asset.type === 'stock') {
-                    const pe = asset.peRatio || 50;
-                    if (pe < 40) buySignals++;
-                  } else {
-                    const social = asset.socialVolume || 0;
-                    if (social > 4000) buySignals++;
-                  }
-                } else if (fundSignal === -1) {
-                  sellSignals++;
-                }
-              }
-
-              // 5. Añadir confirmación de Soporte y Resistencia al Consenso
-              if (isNearSupport) {
-                buySignals++; // Punto de coincidencia adicional
-              }
-              if (isNearResistance) {
-                sellSignals++; // Punto de coincidencia adicional
-              }
-              
-              // Ajustamos la base del total por los puntos adicionales de S/R
-              const totalPossible = totalEvaluated + 1;
-
-              // Si se alcanza el umbral de coincidencia de compra
-              if (buySignals >= threshold) {
-                if (isNearResistance) {
-                  addLog(`[${bot.name}] Consenso de compra en ${asset.symbol} bloqueado por proximidad a resistencia.`, 'info');
-                } else {
-                  const buyConf = Math.round((buySignals / totalPossible) * 100);
-                  addLog(`[${bot.name}] Consenso de COMPRA en ${asset.symbol}: ${buySignals} de ${totalPossible} indicadores a favor (Confianza: ${buyConf}%).`, 'info');
-                  executeTrade(bot.name, asset.symbol, 'BUY', currentPrice, bot.tradeSizeUsd);
-                }
-              } 
-              // Si se alcanza el umbral de coincidencia de venta
-              else if (sellSignals >= threshold && currentHolding > 0) {
-                if (isNearSupport) {
-                  addLog(`[${bot.name}] Consenso de venta en ${asset.symbol} bloqueado por proximidad a soporte.`, 'info');
-                } else {
-                  const sellConf = Math.round((sellSignals / totalPossible) * 100);
-                  addLog(`[${bot.name}] Consenso de VENTA en ${asset.symbol}: ${sellSignals} de ${totalPossible} indicadores a favor (Confianza: ${sellConf}%).`, 'info');
-                  executeTrade(bot.name, asset.symbol, 'SELL', currentPrice, bot.tradeSizeUsd);
-                }
-              }
-            }
-          }
-        });
-      });
+        }
+      }
 
       // 4. Calcular el Valor Total actual de la cartera (Saldo + Tenencias * Precio)
       const currentBalance = balanceRef.current;
@@ -1840,9 +2004,13 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       peRatio: poolAsset.peRatio,
       socialVolume: poolAsset.socialVolume,
       whaleBalanceChange: poolAsset.type === 'crypto' ? 0.05 : undefined,
-      sentimentScore: (poolAsset.sentiment - 50) / 100,
+      // En Live el sentimiento parte neutral (se llenará con noticias reales); el
+      // historial inicial es una semilla, así que aún no cuenta como dato en vivo.
+      sentimentScore: dataModeRef.current === 'live' ? 0 : (poolAsset.sentiment - 50) / 100,
       marketCap: poolAsset.type === 'stock' ? 2.5e11 : 1.5e10,
-      allowedForBots: true
+      allowedForBots: true,
+      dataMode: dataModeRef.current,
+      hasLiveData: dataModeRef.current === 'simulation'
     };
 
     setAssets(prev => [...prev, newAsset]);
@@ -1975,6 +2143,7 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
         logs,
         transactions,
         bots,
+        botPositions,
         toggleBot,
         updateBotParams,
         balance,
@@ -1986,8 +2155,13 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
         triggerManualOrder,
         apiConfig,
         setApiConfig,
+        riskConfig,
+        setRiskConfig,
+        tradingHalted,
         isLoading,
         isApiLive,
+        dataMode,
+        setDataMode,
         timeframe,
         changeTimeframe,
         realNews,

@@ -236,16 +236,18 @@ const externalAssetsRecs: ExtAssetRec[] = [
 ];
 
 export const Recommendations: React.FC = () => {
-  const { assets, timeframe, changeTimeframe } = useTrading();
+  const { assets, timeframe, changeTimeframe, dataMode } = useTrading();
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
 
   // Calcular las recomendaciones cuantitativas para todos los activos
   const recommendationsData = useMemo(() => {
     return assets.map(asset => {
       const analysis = analyzeAsset(asset);
-      
+      const noData = dataMode === 'live' && asset.hasLiveData === false;
+
       return {
         ...asset,
+        noData,
         rsi: analysis.rsi,
         macd: analysis.macd,
         maTrend: analysis.maTrend,
@@ -267,14 +269,22 @@ export const Recommendations: React.FC = () => {
         riskLevel: analysis.riskLevel
       };
     });
-  }, [assets]);
+  }, [assets, dataMode]);
 
-  // 1. Filtrar activos en cartera
+  // Activos excluidos por no tener datos reales en modo Live (no se analizan)
+  const excludedNoData = useMemo(
+    () => recommendationsData.filter(item => item.noData).map(item => item.symbol),
+    [recommendationsData]
+  );
+
+  // 1. Filtrar activos en cartera (excluyendo los que no tienen datos reales en Live)
   const filteredPortfolioData = useMemo(() => {
-    const mapped = recommendationsData.map(asset => ({
-      ...asset,
-      category: getAssetCategory(asset.symbol)
-    }));
+    const mapped = recommendationsData
+      .filter(item => !item.noData)
+      .map(asset => ({
+        ...asset,
+        category: getAssetCategory(asset.symbol)
+      }));
     if (selectedCategory === 'all') return mapped;
     return mapped.filter(item => item.category === selectedCategory);
   }, [recommendationsData, selectedCategory]);
@@ -340,7 +350,21 @@ export const Recommendations: React.FC = () => {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-      
+
+      {/* Aviso: activos excluidos por falta de datos reales en modo Live */}
+      {dataMode === 'live' && excludedNoData.length > 0 && (
+        <div style={{
+          background: 'rgba(245, 158, 11, 0.06)',
+          border: '1px solid rgba(245, 158, 11, 0.18)',
+          borderRadius: '12px',
+          padding: '12px 18px',
+          fontSize: '0.85rem',
+          color: 'var(--text-muted)'
+        }}>
+          ⚠️ Modo Live: {excludedNoData.length} activo(s) sin datos reales se han excluido del análisis para no operar sobre información inventada: <b style={{ color: 'var(--color-warning)' }}>{excludedNoData.join(', ')}</b>. Recargá el periodo o revisá tu conexión para intentar obtener sus cotizaciones.
+        </div>
+      )}
+
       {/* Title Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '16px' }}>
         <div>
